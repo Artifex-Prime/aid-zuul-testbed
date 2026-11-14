@@ -258,7 +258,10 @@ def layout_loads(bed):
     if bed.args.secret:
         expect({"testbed-secret-probe", "testbed-secret-guard-probe"} <= {job["name"] for job in jobs},
                "the test bed's jobs with a secret are loaded: Zuul decrypted the fixture with the imported key")
-        status, key = request("GET", f"{bed.zuul.url}/api/tenant/{bed.zuul.tenant}/key/{bed.args.config_repository}.pub")
+        # The key is PEM, not JSON.
+        with urllib.request.urlopen(f"{bed.zuul.url}/api/tenant/{bed.zuul.tenant}/key/{bed.args.config_repository}.pub",
+                                    timeout=60) as response:
+            status, key = response.status, response.read().decode()
         fixture = subprocess.run(["openssl", "pkey", "-in", bed.args.project_key, "-pubout"],
                                  capture_output=True, text=True, check=True).stdout
         expect(status == 200 and der(key) == der(fixture), "the config copy's key in Zuul is the test bed's own")

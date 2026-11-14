@@ -474,6 +474,9 @@ SECRET_NAMED = """\
 - job:
     name: testbed-secret-taker
     parent: aid-script
+    # A playbook of its own, which the secret goes to: Zuul checks a secret's project on the playbooks it reaches, in
+    # any pipeline. Without one the secret reaches nothing, and only post-review refuses the job.
+    run: ci/zuul/playbooks/script.yaml
     secrets:
       - name: testbed_secret
         secret: testbed-secret

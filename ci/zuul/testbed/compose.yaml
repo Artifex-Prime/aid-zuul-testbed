@@ -79,8 +79,7 @@ services:
   executor:
     <<: *zuul
     image: ${ZUUL_EXECUTOR_IMAGE:?}
-    # Each build's work folder is kept: the scenario reads the trusted guard's failure from a build's log, and run.sh
-    # prints what a failed build's playbooks said (the test bed has no log storage).
+    # Keep job logs for the scenario's assertion that the trusted guard caused the external failure.
     command: ["zuul-executor", "-f", "--keep-jobdir"]
     # Bubblewrap, as on ThunderBox (deploy/zuul/README.md, "The executor").
     privileged: true
@@ -97,17 +96,12 @@ services:
       - ${TESTBED_WORK:?}/ssh:/root/.ssh:ro
     networks: [zuul]
 
-  # The build nodes, stand-ins for #1345's: the static provider in providers.yaml names them. Two, so that gate's
-  # window of two runs two pull requests' jobs at once (ci/zuul/gate.md, "Speculative depth").
-  node: &node
+  # The build node, a stand-in for #1345's: the static provider in zuul.d/providers.yaml names it.
+  node:
     build: node
-    image: zuul-testbed-node
     volumes:
       - ${TESTBED_WORK:?}/ssh/id_rsa.pub:/home/zuul/.ssh/authorized_keys:ro
     networks: [zuul]
-
-  node-2:
-    <<: *node
 
 networks:
   zuul: {}

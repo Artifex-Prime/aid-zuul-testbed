@@ -20,14 +20,6 @@ compose=(docker compose --project-directory "$here" -f "$here/compose.yaml" --en
 logs() {
   echo "== the services' logs"
   "${compose[@]}" logs --no-color --timestamps || true
-  # The end of each failed build's output (compose.yaml keeps the executor's build folders).
-  echo "== the failed builds' output"
-  # shellcheck disable=SC2016 # expanded in the executor's shell
-  "${compose[@]}" exec -T executor sh -c 'ls /var/lib/zuul/builds
-    for output in /var/lib/zuul/builds/*/work/logs/job-output.txt; do
-      grep -qE "FAILED|fatal:|failed=[1-9]|unreachable=[1-9]" "$output" || continue
-      echo "--- $output"; tail -n 60 "$output"
-    done' 2>&1 || true
 }
 finish() {
   local status=$?
@@ -99,21 +91,31 @@ export ZUUL_GRAPHQL=$graphql
 
 echo "== start"
 "${compose[@]}" build --quiet node
+secrets=$(sed -n 's/^TESTBED_SECRETS=//p' "$here/testbed.env")
+if [ "$secrets" = 1 ]; then
+  # The test bed's project key for the config copy (sync.sh), in ZooKeeper before the scheduler starts, so that Zuul
+  # takes it rather than making one: the fixture secret in the copy is encrypted for it. Stored as Zuul stores its own,
+  # encrypted with the keystore password (zuul/lib/keystorage.py), and imported as a restore would be.
+  "${compose[@]}" up --detach --quiet-pull --wait zookeeper db
+  install -m 644 "$here/project-key.pem" "$work/etc/testbed-project-key.pem"
+  install -m 644 "$here/import-key.py" "$work/etc/import-key.py"
+  "${compose[@]}" run --rm --no-deps --quiet-pull -e TESTBED_CONFIG_REPOSITORY="$config" --entrypoint sh scheduler -c \
+    'python3 -I /etc/zuul/import-key.py /etc/zuul/testbed-project-key.pem /tmp/keys.json && zuul-admin import-keys /tmp/keys.json'
+fi
 "${compose[@]}" up --detach --quiet-pull
 "${compose[@]}" ps
 
 # A public test fixture, not a credential: mimic the raw token readable by the PR pod's job user.
 # The malicious-hook scenario proves check can read it while check-external executes none of its hooks.
-# On both nodes (compose.yaml), as a job may run on either.
-for node in node node-2; do
-  "${compose[@]}" exec -T --user root "$node" sh -c \
-    'mkdir -p /var/run/farm; printf "testbed-farm-credential\n" > /var/run/farm/token; chmod 444 /var/run/farm/token'
-done
+"${compose[@]}" exec -T --user root node sh -c \
+  'mkdir -p /var/run/farm; printf "testbed-farm-credential\n" > /var/run/farm/token; chmod 444 /var/run/farm/token'
 TESTBED_NODE_ID=$("${compose[@]}" ps --quiet node)
-TESTBED_NODE_2_ID=$("${compose[@]}" ps --quiet node-2)
 TESTBED_EXECUTOR_ID=$("${compose[@]}" ps --quiet executor)
-export TESTBED_NODE_ID TESTBED_NODE_2_ID TESTBED_EXECUTOR_ID
+export TESTBED_NODE_ID TESTBED_EXECUTOR_ID
 
 echo "== scenario"
+secret_args=()
+[ "$secrets" != 1 ] || secret_args=(--secret "$(sed -n 's/^TESTBED_SECRET=//p' "$here/testbed.env")" \
+  --project-key "$here/project-key.pem")
 python3 -I -B "$here/scenario.py" --zuul http://127.0.0.1:9000 --tenant aid --repository "$TESTBED_REPOSITORY" \
-  --config-repository "$config" --checkout "$root"
+  --config-repository "$config" --checkout "$root" "${secret_args[@]}"

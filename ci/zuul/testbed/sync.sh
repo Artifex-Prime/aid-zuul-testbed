@@ -3,7 +3,8 @@
 #   ci/zuul/testbed/sync.sh /path/to/testbed-checkout /path/to/aid-zuul-config-checkout /path/to/config-testbed-checkout
 # The test bed's checkout gets: ci/zuul/; from deploy/zuul/ the zuul.conf, ZooKeeper's configuration and secrets.sh, and
 # the images ThunderBox runs (as testbed.env, with the config copy's repository); what AID's jobs run (a stand-in for
-# the seam rule's script, .bazelversion, an empty MODULE.bazel); the workflow; and TESTBED, the commits it came from.
+# each script a job names, .bazelversion, and a Bazel workspace whose one test is the gate's stand-in, from workspace/);
+# the workflow; and TESTBED, the commits it came from.
 # The config copy's checkout gets the aid-zuul-config checkout's files, as they are on disk, plus the test bed's build
 # node (testbed/providers.yaml), the test bed's jobs with a secret in place of aid-zuul-config's (below), and the same
 # TESTBED. Everything in either checkout but .git is replaced. Commit and push
@@ -45,10 +46,18 @@ done < <(grep -rlE '^- secret:|^ +secrets:' "$config_dest/zuul.d" || true)
 # what permission a pull request's author has (the workflow's token is no collaborator). So the config copy's
 # pipelines report commit statuses instead, and start on any author's events. A check run carries a configuration
 # error in its summary; a status cannot, so each failure reporter comments too, as main's did before check runs, and
-# the scenario's negative cases read the error from that comment. aid-zuul-config's own files keep check runs and the
-# permission (AIDepartment's deploy/zuul/github.md); every change must apply, or the copy stops.
+# the scenario's negative cases read the error from that comment. gate's requirement and trigger on check's check run
+# become the same on check's status, which GitHub shows as made by github-actions[bot] (its REST API) or
+# github-actions (its GraphQL API, which Zuul reads the requirement from). aid-zuul-config's own files keep check runs
+# and the permission (AIDepartment's deploy/zuul/github.md); every change must apply, or the copy stops.
 pipelines="$config_dest/zuul.d/pipelines.yaml"
-awk '
+on_check=$(grep -c 'aid-zuul:aid/check:success$' "$pipelines" || true)
+TESTBED_CHECK_STATUS="'github-actions(\\[bot\\])?:aid/check:success'" awk '
+  BEGIN { status = ENVIRON["TESTBED_CHECK_STATUS"] }
+  /^ +- event: check_run$/ { sub(/check_run$/, "pull_request"); print; checkrun = 1; next }
+  checkrun && /^ +action: completed$/ { sub(/completed$/, "status"); print; next }
+  checkrun && /^ +check: aid-zuul:aid\/check:success$/ { sub(/check: .*/, "status: " status); print; checkrun = 0; next }
+  /^ +status: aid-zuul:aid\/check:success$/ { sub(/status: .*/, "status: " status); print; next }
   /^ +check: (in_progress|queued)$/ { sub(/check: .*/, "status: pending"); print; next }
   /^ +check: success$/ { sub(/check: success/, "status: success"); print; next }
   /^ +check: failure$/ { sub(/check: failure/, "status: failure"); print; failed = 1; next }
@@ -57,8 +66,11 @@ awk '
   /^ +comment: / { failed = 0 }
   { print }
 ' "$pipelines" > "$pipelines.testbed" && mv "$pipelines.testbed" "$pipelines"
-if grep -qE '^ +(check|permission): ' "$pipelines"; then
+if grep -qE '^ +(check|permission): |event: check_run|aid-zuul:' "$pipelines"; then
   echo "$pipelines: a check run or a permission the test bed cannot take is left: look at sync.sh again" >&2; exit 1
+fi
+if [ "$(grep -cF 'github-actions(\[bot\])?:aid/check:success' "$pipelines")" -ne "$on_check" ]; then
+  echo "$pipelines: not every requirement or trigger on check's result is on its status: look at sync.sh again" >&2; exit 1
 fi
 if [ "$(grep -c '^ *status: failure$' "$pipelines")" -ne "$(grep -A1 '^ *status: failure$' "$pipelines" | grep -c '^ *comment: true$')" ]; then
   echo "$pipelines: a failure reporter does not comment, so a configuration error would not be seen" >&2; exit 1
@@ -68,14 +80,17 @@ cp -R "$root/ci/zuul" "$dest/ci/zuul"
 cp "$root/deploy/zuul/server/config/zuul.conf" "$dest/deploy/zuul/server/config/"
 cp "$root/deploy/zuul/server/zoo.cfg" "$dest/deploy/zuul/server/"
 cp "$root/deploy/zuul/secrets.sh" "$dest/deploy/zuul/"
-# A stand-in that takes the same arguments: the test bed's repository is public, and holds only what Zuul needs.
-cat > "$dest/scripts/seam-lint.sh" <<'STANDIN'
-#!/usr/bin/env bash
-# The test bed's stand-in for AIDepartment's scripts/seam-lint.sh: it checks only that aid-seam-lint calls it as CI does.
-[ "$*" = "--project aid" ] || { echo "seam-lint stand-in: called with '$*', not '--project aid'" >&2; exit 2; }
-echo "seam-lint stand-in: called as CI calls the real one"
-STANDIN
-chmod 755 "$dest/scripts/seam-lint.sh"
+# A stand-in for each script a job of AID's names: the test bed's repository is public, and holds only what Zuul needs.
+scripts=$(sed -n 's/^      script: //p' "$root/ci/zuul/zuul.d/jobs.yaml")
+[ -n "$scripts" ] || { echo "no script in ci/zuul/zuul.d/jobs.yaml: look at sync.sh again" >&2; exit 1; }
+for script in $scripts; do
+  [[ "$script" =~ ^(ci|scripts)/[A-Za-z0-9._/-]+$ ]] || { echo "'$script' is not a script under ci/ or scripts/" >&2; exit 1; }
+  mkdir -p "$dest/$(dirname "$script")"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "# The test bed's stand-in for AIDepartment's $script: it shows only that its job ran it." \
+    "echo \"stand-in for $script, called with: \$*\"" > "$dest/$script"
+  chmod 755 "$dest/$script"
+done
 # The test bed's jobs with a secret (secret-probe.yaml), with the shared guard of aid-zuul-config's checkout: a
 # project key of the test bed's own, made here and given to Zuul by run.sh, and a fixture secret encrypted for it. Both
 # are public in the copies, and guard nothing. A checkout from before the guard runs without them.
@@ -104,8 +119,13 @@ POST
 else
   echo "the aid-zuul-config checkout has no playbooks/secrets/guard.yaml: the test bed's secret checks are left out" >&2
 fi
+# The Bazel workspace aid-bazel and aid-bazel-everything run in: the version AIDepartment pins, and the gate's test.
 cp "$root/.bazelversion" "$dest/"
-: > "$dest/MODULE.bazel"
+cp "$here/workspace/MODULE.bazel.testbed" "$dest/MODULE.bazel"
+cp "$here/workspace/bazelrc.testbed" "$dest/.bazelrc"
+mkdir -p "$dest/testbed/gate"
+cp "$here/workspace/BUILD.testbed" "$dest/testbed/gate/BUILD.bazel"
+cp "$here/workspace/gate_test.sh" "$dest/testbed/gate/"
 cp "$here/workflow.yml" "$dest/.github/workflows/testbed.yml"
 
 # The images, as ThunderBox's manifests pin them: Zuul's from version/, ZooKeeper's and MariaDB's from their own.

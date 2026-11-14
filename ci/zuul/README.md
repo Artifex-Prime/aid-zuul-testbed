@@ -17,6 +17,7 @@ once Zuul has its GitHub connection (#1344) and build nodes (#1345) ([On Thunder
 | [`zuul.d/`](zuul.d) | the job library and AID's jobs, and which pipeline runs which | runs on the pull request itself |
 | [`playbooks/`](playbooks) | the library's playbooks and their roles | runs on the pull request itself |
 | [`testbed/`](testbed) | Zuul on both, in Docker Compose, with checks | |
+| [`gate.md`](gate.md) | how `check`, `gate` and `hold` do what CI's two layers and Mergify do today, row by row | |
 
 ## Trusted and untrusted
 
@@ -53,8 +54,10 @@ the steps (#1341):
   <bazel_targets>` in the checkout, with the node's Bazelisk, which runs the version `.bazelversion` pins.
 - **`aid-script`**, abstract: `./<script> <script_args>` in the checkout, where `script` is a path under `ci/` or
   `scripts/`. The role refuses any other.
-- **AID's jobs** set those variables, and nothing else that runs: today `aid-seam-lint`, the seam rule as CI runs it.
-  #1347 and #1353 bring the rest of CI's steps, as jobs of the same two kinds.
+- **AID's jobs** set those variables, and nothing else that runs. `check` runs the cheap ones, the plan job's script
+  checks of CI's cheap layer (`aid-seam-lint`, `aid-seam-lint-test`, `aid-apps-lint`, `aid-apps-lint-test`), and
+  `gate` the full one, Bazel's build and test of everything (`aid-bazel-everything`): [gate.md](gate.md). #1353 brings
+  the rest of CI's steps, as jobs of the same two kinds.
 
 ## Adding or changing a job
 
@@ -105,18 +108,25 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
 5. a proposed job reads a fake raw farm token in every pre/run/post/cleanup hook under `check`, then fails at the
    trusted base guard under `check-external`. The node's probe file remains unchanged, and the executor log must
    identify the guard failure. No external hook executes, including post and cleanup after the failed pre-run;
-6. a job with a secret, defined in the config project as `deploy/zuul/job-secrets.md` says, gets it in `post` on
-   `main`: its log and its build's artifact show the fixture's SHA-256, never the value. One whose secret may not go
-   to `post` is failed by aid-zuul-config's guard, `playbooks/secrets/guard.yaml`, before its run playbook;
-7. three pull requests are refused with Zuul's own words: one that lists that job in `check` ("does not allow
-   post-review job"), one with a job inheriting it ("is final and can not act as a parent"), and one with a job naming
-   its secret ("Secrets must be defined in the same project in which they are used").
+6. to 10. the rows of [gate.md](gate.md): a job's timeout; ready means queued, the full jobs in gate and the merge by
+   rebase; the `hold` label; two pull requests at once in gate's window, a flaky failure that starts the one behind
+   it again, and `regate`; a ready pull request that check's result alone brings into gate, before and after a push
+   (gate.md, "Seen working");
+11. a job with a secret, defined in the config project as `deploy/zuul/job-secrets.md` says, gets it in `post` on
+    `main`: its log and its build's artifact show the fixture's SHA-256, never the value. One whose secret may not go
+    to `post` is failed by aid-zuul-config's guard, `playbooks/secrets/guard.yaml`, before its run playbook;
+12. three pull requests are refused with Zuul's own words: one that lists that job in `check` ("does not allow
+    post-review job"), one with a job inheriting it ("is final and can not act as a parent"), and one with a job naming
+    its secret ("Secrets must be defined in the same project in which they are used").
 
-Zuul has no route from GitHub there, so the test bed sends Zuul the `pull_request` event GitHub would, signed with the
-connection's webhook token. The build node is a container with Bazelisk, a stand-in for #1345's; its provider,
-[`testbed/providers.yaml`](testbed/providers.yaml), goes only into the test bed's copy of aid-zuul-config. It replaces
-the production `zuul.d/providers.yaml` there: Compose cannot reach the k3s pod. Jobs and playbooks are copied unchanged;
-the pipeline adaptations for the workflow's token are below. The production provider needs a separate live test on k3s.
+Zuul has no route from GitHub there, so the test bed sends Zuul the events GitHub would (`pull_request`,
+`issue_comment`, `status`), signed with the connection's webhook token. The build nodes are two containers with
+Bazelisk, stand-ins for #1345's; their provider, [`testbed/providers.yaml`](testbed/providers.yaml), goes only into the
+test bed's copy of aid-zuul-config. It replaces the production `zuul.d/providers.yaml` there: Compose cannot reach the
+k3s pod. The production provider needs a separate live test on k3s. Each script a job names is a stand-in there that
+only shows it ran, and the gate's full job runs a stand-in test ([`testbed/workspace/`](testbed/workspace)) that the
+scenario's pull requests tell to sleep or to fail. The base job and its playbooks are copied unchanged; the pipeline
+adaptations for the workflow's token are below.
 
 **Secrets.** aid-zuul-config's secrets are encrypted for ThunderBox's project key, which no test bed has, and Zuul
 decrypts every secret a job names as it loads the configuration. So `sync.sh` leaves `zuul.d/secrets.yaml`, and each
@@ -125,7 +135,7 @@ file of `zuul.d/` that defines or names a secret, out of the config copy. In the
 `deploy/zuul/encrypt-secret.sh` for a project key it makes. It also lists those jobs in `post` in the test bed's copy
 (`zuul.d/testbed-post.yaml`). [`testbed/import-key.py`](testbed/import-key.py) gives Zuul that key before the scheduler
 starts, as a restore of the keys would (`zuul-admin import-keys`). The key and the fixture are public in the copies,
-and guard nothing. A checkout of aid-zuul-config without the guard runs without checks 6 and 7. aid-zuul-config's own
+and guard nothing. A checkout of aid-zuul-config without the guard runs without checks 11 and 12. aid-zuul-config's own
 jobs with secrets are checked by Zuul on ThunderBox, on the pull request that changes them.
 
 One thing differs from ThunderBox's Zuul: the token. For every pull request, Zuul's GitHub driver asks for the
@@ -163,7 +173,7 @@ gh workflow run testbed.yml --repo <you>/aid-zuul-testbed
 gh run watch --repo <you>/aid-zuul-testbed --exit-status "$(gh run list --repo <you>/aid-zuul-testbed --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 
-The run takes about 4 minutes. It closes its pull requests and deletes their branches; `sync.sh` puts `main` back.
+The run takes about 20 minutes, most of it the gate's checks. It closes the pull requests Zuul did not merge and deletes their branches; `sync.sh` puts `main` back.
 A failed run prints every service's log.
 
 ## On ThunderBox
@@ -203,6 +213,9 @@ without the test bed's build node:
   - every playbook a job names exists under `ci/zuul/playbooks/`, and every role a playbook names exists beside it;
   - every job of AID's is `aid-bazel` or `aid-script`, or inherits one of them; every role runs only Ansible's
     `command` and `assert`;
+  - every script a job names is under `ci/` or `scripts/`, exists and is executable;
+  - AID's one project stanza merges by rebase, runs the same jobs in `check` and `check-external`, and names in each
+    pipeline only AID's jobs that run (or Zuul's `noop`);
   - the test bed's node has the Bazelisk that `mise.toml` pins.
 - **The test bed** ([above](#the-test-bed)), on Zuul itself, for every change to aid-zuul-config or the test bed, and
   to see a change to the library work before Zuul runs on ThunderBox.

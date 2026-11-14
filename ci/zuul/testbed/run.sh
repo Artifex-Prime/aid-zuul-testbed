@@ -20,6 +20,14 @@ compose=(docker compose --project-directory "$here" -f "$here/compose.yaml" --en
 logs() {
   echo "== the services' logs"
   "${compose[@]}" logs --no-color --timestamps || true
+  # The end of each failed build's output (compose.yaml keeps the executor's build folders).
+  echo "== the failed builds' output"
+  # shellcheck disable=SC2016 # expanded in the executor's shell
+  "${compose[@]}" exec -T executor sh -c 'ls /var/lib/zuul/builds
+    for output in /var/lib/zuul/builds/*/work/logs/job-output.txt; do
+      grep -qE "FAILED|fatal:|failed=[1-9]|unreachable=[1-9]" "$output" || continue
+      echo "--- $output"; tail -n 60 "$output"
+    done' 2>&1 || true
 }
 finish() {
   local status=$?
@@ -107,11 +115,15 @@ fi
 
 # A public test fixture, not a credential: mimic the raw token readable by the PR pod's job user.
 # The malicious-hook scenario proves check can read it while check-external executes none of its hooks.
-"${compose[@]}" exec -T --user root node sh -c \
-  'mkdir -p /var/run/farm; printf "testbed-farm-credential\n" > /var/run/farm/token; chmod 444 /var/run/farm/token'
+# On both nodes (compose.yaml), as a job may run on either.
+for node in node node-2; do
+  "${compose[@]}" exec -T --user root "$node" sh -c \
+    'mkdir -p /var/run/farm; printf "testbed-farm-credential\n" > /var/run/farm/token; chmod 444 /var/run/farm/token'
+done
 TESTBED_NODE_ID=$("${compose[@]}" ps --quiet node)
+TESTBED_NODE_2_ID=$("${compose[@]}" ps --quiet node-2)
 TESTBED_EXECUTOR_ID=$("${compose[@]}" ps --quiet executor)
-export TESTBED_NODE_ID TESTBED_EXECUTOR_ID
+export TESTBED_NODE_ID TESTBED_NODE_2_ID TESTBED_EXECUTOR_ID
 
 echo "== scenario"
 secret_args=()

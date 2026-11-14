@@ -99,17 +99,6 @@ export ZUUL_GRAPHQL=$graphql
 
 echo "== start"
 "${compose[@]}" build --quiet node
-secrets=$(sed -n 's/^TESTBED_SECRETS=//p' "$here/testbed.env")
-if [ "$secrets" = 1 ]; then
-  # The test bed's project key for the config copy (sync.sh), in ZooKeeper before the scheduler starts, so that Zuul
-  # takes it rather than making one: the fixture secret in the copy is encrypted for it. Stored as Zuul stores its own,
-  # encrypted with the keystore password (zuul/lib/keystorage.py), and imported as a restore would be.
-  "${compose[@]}" up --detach --quiet-pull --wait zookeeper db
-  install -m 644 "$here/project-key.pem" "$work/etc/testbed-project-key.pem"
-  install -m 644 "$here/import-key.py" "$work/etc/import-key.py"
-  "${compose[@]}" run --rm --no-deps --quiet-pull -e TESTBED_CONFIG_REPOSITORY="$config" --entrypoint sh scheduler -c \
-    'python3 -I /etc/zuul/import-key.py /etc/zuul/testbed-project-key.pem /tmp/keys.json && zuul-admin import-keys /tmp/keys.json'
-fi
 "${compose[@]}" up --detach --quiet-pull
 "${compose[@]}" ps
 
@@ -126,8 +115,11 @@ TESTBED_EXECUTOR_ID=$("${compose[@]}" ps --quiet executor)
 export TESTBED_NODE_ID TESTBED_NODE_2_ID TESTBED_EXECUTOR_ID
 
 echo "== scenario"
-secret_args=()
-[ "$secrets" != 1 ] || secret_args=(--secret "$(sed -n 's/^TESTBED_SECRET=//p' "$here/testbed.env")" \
-  --project-key "$here/project-key.pem")
+# With TESTBED_LOOP_PULL, the two-agent loop's check alone, on that pull request (scenario.py, check 11).
+loop=()
+if [ -n "${TESTBED_LOOP_PULL:-}" ]; then
+  [[ "$TESTBED_LOOP_PULL" =~ ^[0-9]+$ ]] || { echo "TESTBED_LOOP_PULL '$TESTBED_LOOP_PULL' is not a pull request's number" >&2; exit 2; }
+  loop=(--loop-pull "$TESTBED_LOOP_PULL")
+fi
 python3 -I -B "$here/scenario.py" --zuul http://127.0.0.1:9000 --tenant aid --repository "$TESTBED_REPOSITORY" \
-  --config-repository "$config" --checkout "$root" "${secret_args[@]}"
+  --config-repository "$config" --checkout "$root" "${loop[@]}"

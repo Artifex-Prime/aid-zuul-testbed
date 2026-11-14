@@ -23,7 +23,7 @@ checks are missing"). Every row below was seen on the test bed ([Seen working](#
 | serial queue, batches of 2 | gate's speculative queue: a window of two, so two pull requests are tested at once, the second on top of the first ([Speculative depth](#speculative-depth)) | gate's `window` |
 | fast-forward merges | `merge-mode: rebase`: Zuul tests the pull request's commits rebased onto the state ahead of them, and merges with GitHub's rebase. `main` stays linear ([Merging](#merging)) | `project.yaml` |
 | the `hold` label blocks queueing | gate's `reject: label: hold`; labelling `hold`, or turning the pull request back into a draft, takes it out of gate (the pipeline `hold`); removing the label enqueues it again | gate's `reject` and `trigger`, the pipeline `hold` |
-| ready means queued; a draft is never queued | gate's `require: draft: false`, and its trigger `ready_for_review` | gate's `require` and `trigger` |
+| ready means queued; a draft is never queued | ready **and approved**: gate's `require: draft: false` and an approving review by an account with write access, and its triggers `ready_for_review` and that review. Ready alone no longer queues: the reviewer's approval is what lets a pull request in ([The two-agent loop](#the-two-agent-loop), #1348) | gate's `require` and `trigger` |
 | 4 h checks timeout (2 h a job) | each job's `timeout`: the base job's 2 hours, less where a job sets it ([Timeouts](#timeouts)) | aid-zuul-config's `base`, `jobs.yaml` |
 | dequeue and `@mergifyio requeue` | a comment `regate` by an account with write access enqueues a pull request again; a push dequeues it (`dequeue-on-new-patchset`), and it comes back once check passes on the new head | gate's `trigger` |
 | queued, dequeued labels; the "Merge Queue Status" comment | gate's check run `aid/gate`: queued, in progress, success, failure (with a comment naming the failed job and its log), cancelled | gate's reporters |
@@ -32,6 +32,10 @@ checks are missing"). Every row below was seen on the test bed ([Seen working](#
 
 Each of these is a difference from today, kept on purpose or open for a later issue:
 
+- **Ready is not enough: an approval is.** Mergify queues a pull request that is ready. gate also requires an
+  approving review by an account with write access, and no request for changes by one (#1348). The builder marks its
+  pull request ready, which it could do at any time; only the reviewer, or Kristóf, can approve it
+  ([The two-agent loop](#the-two-agent-loop)).
 - **A draft runs `check`.** Actions runs nothing on a draft; Zuul's `check` runs on every push by an account with
   write access (#1344's trust model, which keeps `ready_for_review` out of `check`'s triggers: a maintainer marking a
   stranger's pull request ready would run it with the farm's credential). check holds only the cheap jobs.
@@ -42,7 +46,7 @@ Each of these is a difference from today, kept on purpose or open for a later is
 - **A push to `main` outside the gate does not restart it.** Mergify restarts the check in front
   (`reset_on_external_merge`). Zuul's builds go on against the `main` they started from, and GitHub's rebase then puts
   their commits on the newer one. From #1355 only Zuul moves `main` but for the orchestrator's `internal/`-only state
-  commits, which no job tests; #1348 decides whether those wait for an empty gate.
+  commits, and those don't wait for an empty gate ([The two-agent loop](#the-two-agent-loop), "State commits").
 - **`hold` leaves `aid/gate` as it was.** Zuul removes a superseded item without a dequeue report (the scheduler's
   `_doSupercedeEvent`, `removeItem`): its buildset is recorded `DEQUEUED`, but a pull request taken out by `hold`
   keeps its `aid/gate` check run queued or in progress (pending on the test bed) until it enters gate again, or a
@@ -50,6 +54,58 @@ Each of these is a difference from today, kept on purpose or open for a later is
 - **No labels.** `queued` and `dequeued` were Mergify's labels; `aid/gate`'s state shows the same in lists.
 - **The gate's own check.** Zuul runs `check`'s cheap jobs once per head and gate's full ones once per speculative
   state. A failure that a rebase onto newer pull requests caused shows in gate, as it shows in Mergify's queue draft.
+
+## The two-agent loop
+
+How the build-and-review loop ([`docs/review-loop.md`](../../docs/review-loop.md)) runs on Zuul (#1348). Until the
+switch (#1355) Mergify still merges, and the commands are its own ([`docs/development.md`](../../docs/development.md),
+"Merging: the merge queue"); from #1355 they are these.
+
+- **Enqueue: the reviewer's approval.** The reviewer approves a round with nothing blocking, a review "Approve" of the
+  head it reviewed, where it used to post a plain comment review. The builder then marks the pull request ready. gate
+  takes it once it is ready, approved by an account with write access, `check` passed on its head and without `hold`.
+  Ready and the approval are both triggers, so whichever comes second enqueues it. Only the reviewer, or Kristóf, can
+  approve: GitHub lets nobody approve their own pull request, and the accounts with write access are `kristofk`,
+  `Opifex-Magnus` and `Artifex-Prime`. Without the approval, ready, a comment review or a `regate` comment lets in
+  nothing (the test bed's check 11).
+- **An approval covers the head it approved.** Zuul reads each reviewer's newest review, not the commit it was of
+  (its GitHub driver's `getPullReviews`). What keeps a push after the approval from riding in on it is GitHub: from
+  #1355, `main`'s protection dismisses an approval when a commit is pushed
+  ([`deploy/zuul/github.md`](../../deploy/zuul/github.md), "Branch protection"), and the test bed's `main` does the
+  same. A push also takes a pull request out of gate. So after the clean round the builder pushes only what is worth
+  another round, and requests the review again after it: the reviewer's approval of the new head lets it in.
+- **A request for changes keeps it out.** gate rejects a pull request whose newest review by an account with write
+  access requests changes: Kristóf's request after a bot's approval keeps it out until he approves. A review submitted
+  while the pull request is in gate does not take it out; `hold` does.
+- **Hold and dequeue.** The label `hold`, or turning the pull request back into a draft, takes it out of gate and
+  keeps it out. Removing the label, or marking it ready again, brings it back, if it still meets gate's requirements.
+  Zuul has no dequeue command for the bots: `hold` is theirs.
+- **Requeue.** A comment `regate` by an account with write access asks gate to take the pull request again: after a
+  failure that was not its code (a flake, whose issue is filed first; a lost node), or when it should be in gate and
+  is not (below). The requirements are read again, so `regate` lets in nothing that is not ready, approved and
+  checked. After a failure caused by its code, the builder pushes the fix and requests the review again.
+- **What Zuul reports, and checking that it was queued.** gate reports on the pull request as the check run
+  `aid/gate`: queued, then in progress, then success and the merge, or failure with a comment that names the failed
+  job and links its log. About 10 minutes after the pull request is ready, approved and `aid/check` passed on its
+  head, `aid/gate` is there. If it is not (GitHub's event came late or not at all), comment `regate`, once. If that
+  starts nothing either, tell the orchestrator.
+- **What wakes the bots.** The loop's automations ([`docs/review-loop.md`](../../docs/review-loop.md), "How AID routes
+  the events") react to GitHub's review requests, submitted reviews and closed pull requests, never to a queue's
+  events, so none named Mergify's and none changes. The approval reaches the builder as every review does
+  (`--review-in`). Zuul's merge closes the pull request on GitHub, and `--pr-closed` forgets its threads as it does
+  after Mergify's. The builder hears of a failure in gate as it hears of any check's: T3 Code's `watch_pull_request`
+  wakes it when `aid/gate` fails or Zuul comments. Zuul's own events reaching AID, with no forge in between, are
+  #1349; an automation on them can then take the watch's place.
+- **The skills.** `review-pr` approves the clean round. `work-on-issue` marks the pull request ready after it, pushes
+  after the approval only with a new round, and takes the queue's commands from the repository's docs on merging. The
+  skills name neither Mergify nor Zuul, so they work on both, and the switch (#1355) changes only those docs.
+- **State commits.** The orchestrator's `internal/`-only commits to `main` don't wait for an empty gate. Zuul does not
+  restart gate on such a push ([What changes](#what-changes)): its builds go on against the `main` they started from,
+  and GitHub's rebase puts their commits on top of the state commit. A state commit changes only notes in
+  `internal/`, which no gate job builds or tests, so what lands is the tree gate tested plus files no test reads. A
+  pull request that changes the same file under `internal/` does not rebase: Zuul reports the merge failure, and the
+  builder rebases and pushes. Waiting for an empty gate would hold the orchestrator's tick for as long as gate's runs
+  take, without making any test truer. Until #1355 Mergify's `reset_on_external_merge` stays as it is.
 
 ## Merging
 

@@ -32,7 +32,8 @@ decides what every job may do and see.
 - **AID's project is untrusted.** Its jobs, playbooks and roles are tested *speculatively*: a pull request that adds
   or changes a job runs that job, as changed, on itself, merged onto `main` and onto the pull requests ahead of it in
   the gate. What it may not do, Zuul refuses with a configuration error on the pull request: a pipeline, or a base job
-  (the test bed checks both).
+  (the test bed checks both). The trusted base currently rejects `check-external` before untrusted code starts,
+  until separate credential-free nodes exist; the PR node's raw farm token is readable by its job user.
 
 AID's configuration is in `ci/zuul/zuul.d/`, which the tenant names (`extra-config-paths`), so that all of CI stays
 under `ci/`. Zuul would also read a `zuul.yaml`, `zuul.d/`, `.zuul.yaml` or `.zuul.d/` at the repository's root, so
@@ -103,7 +104,10 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
    config projects" on the pull request;
 4. a pull request that defines a pipeline in AID's project fails, with Zuul's "Pipelines may not be defined in
    untrusted repos" on the pull request;
-5. to 9. the rows of [gate.md](gate.md): a job's timeout; ready means queued, the full jobs in gate and the merge by
+5. a proposed job reads a fake raw farm token in every pre/run/post/cleanup hook under `check`, then fails at the
+   trusted base guard under `check-external`. The node's probe file remains unchanged, and the executor log must
+   identify the guard failure. No external hook executes, including post and cleanup after the failed pre-run;
+6. to 10. the rows of [gate.md](gate.md): a job's timeout; ready means queued, the full jobs in gate and the merge by
    rebase; the `hold` label; two pull requests at once in gate's window, a flaky failure that starts the one behind
    it again, and `regate`; a ready pull request that check's result alone brings into gate, before and after a push
    (gate.md, "Seen working").
@@ -111,9 +115,11 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
 Zuul has no route from GitHub there, so the test bed sends Zuul the events GitHub would (`pull_request`,
 `issue_comment`, `status`), signed with the connection's webhook token. The build nodes are two containers with
 Bazelisk, stand-ins for #1345's; their provider, [`testbed/providers.yaml`](testbed/providers.yaml), goes only into the
-test bed's copy of aid-zuul-config. Each script a job names is a stand-in there that only shows it ran, and the gate's
-full job runs a stand-in test ([`testbed/workspace/`](testbed/workspace)) that the scenario's pull requests tell to
-sleep or to fail.
+test bed's copy of aid-zuul-config. It replaces the production `zuul.d/providers.yaml` there: Compose cannot reach the
+k3s pod. The production provider needs a separate live test on k3s. Each script a job names is a stand-in there that
+only shows it ran, and the gate's full job runs a stand-in test ([`testbed/workspace/`](testbed/workspace)) that the
+scenario's pull requests tell to sleep or to fail. The base job and its playbooks are copied unchanged; the pipeline
+adaptations for the workflow's token are below.
 
 One thing differs from ThunderBox's Zuul: the token. For every pull request, Zuul's GitHub driver asks for the
 repository's branch protection rules, which need the repository's **administration** permission. A workflow's token
@@ -150,7 +156,7 @@ gh workflow run testbed.yml --repo <you>/aid-zuul-testbed
 gh run watch --repo <you>/aid-zuul-testbed --exit-status "$(gh run list --repo <you>/aid-zuul-testbed --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 
-The run takes about 15 minutes, most of it the gate's checks. It closes the pull requests Zuul did not merge and deletes their branches; `sync.sh` puts `main` back.
+The run takes about 20 minutes, most of it the gate's checks. It closes the pull requests Zuul did not merge and deletes their branches; `sync.sh` puts `main` back.
 A failed run prints every service's log.
 
 ## On ThunderBox

@@ -82,8 +82,14 @@ build node reaches it (#1345's node, `deploy/zuul/node/`):
 - **no local fallback**: an action the farm can't run fails, rather than run on a node that can't build it.
 
 Under `dev`, remote's instance: #1345's node is the pull requests', and the gate's `main` (#1298) comes with its own
-nodes and credential (#1351). Not yet run on the node itself, which is not deployed: #1353's shadow runs it there
-first, with the node's 768 MiB Bazel heap and 6 GiB of scratch for the toolchain.
+nodes and credential (#1351).
+
+**Not working yet (#1485).** The node is not deployed, so the job has not run there. From a box, with a fresh output
+base and no `swift`, `clang`, `gcc` or `cc` on the repository rules' PATH, `--config=ci --config=zuul` (the boxes'
+farm address in place of the cluster's) got through analysis and ran 47 actions on the farm. After 38 minutes Bazel's
+circuit breaker stopped it ("Call not executed due to a high failure rate"). The farm does build Swift with its
+workers' own toolchain, but that toolchain is found through a local `swiftc`. #1485 gives the job a toolchain that
+works from the node.
 
 ## Speculative depth
 
@@ -119,24 +125,24 @@ too, which is one more reason the window stays at two until the flake handling m
 ## Seen working
 
 The test bed ([README.md](README.md), "The test bed") runs each row on Zuul 14.3.0, with copies of this folder and of
-kristofk/aid-zuul-config ([`testbed/scenario.py`](testbed/scenario.py), checks 5 to 9; check 2 for check's cheap jobs).
+kristofk/aid-zuul-config ([`testbed/scenario.py`](testbed/scenario.py), checks 6 to 10; check 2 for check's cheap jobs).
 The gate's full job runs a stand-in test there ([`testbed/workspace/`](testbed/workspace)) that each pull request of
 the scenario tells to sleep or to fail, so the test bed shows the pipelines, not AID's build on the farm
 ([The full job on a build node](#the-full-job-on-a-build-node)). On the test bed, check reports a commit status instead of a check run, so gate's
 requirement and trigger read that status ([`testbed/sync.sh`](testbed/sync.sh)).
 
-Run [43598267803](https://github.com/Artifex-Prime/aid-zuul-testbed/actions/runs/43598267803) on 2026-11-14, of
-AIDepartment's `ci/zuul` at `d3418639` and kristofk/aid-zuul-config at `d466b39f` (#1347's branches), passed all eight
-checks in 15 minutes:
+Run [43601725210](https://github.com/Artifex-Prime/aid-zuul-testbed/actions/runs/43601725210) on 2026-11-14, of
+AIDepartment's `ci/zuul` at `e19c36fe` and kristofk/aid-zuul-config at `d466b39f` (#1347's branches), passed all nine
+checks in 22 minutes:
 
 | Row | Check | Seen |
 |---|---|---|
-| `Cheap checks passed` | 2, 6, 9 | check runs the cheap jobs; a draft whose check passed stays out of gate until it is ready; a ready pull request stays out until check passes on its head, and that alone brings it in |
-| `Every package passed` | 6 | gate runs `aid-bazel-everything`, and not check's jobs |
-| batches of 2 | 8 | two pull requests' builds run at once, the second's item behind the first's, in a window of two |
-| fast-forward | 6 | Zuul merges by rebase: `main` moves forward with no merge commit |
-| `hold` | 7 | a ready pull request with `hold` stays out; labelled `hold` in gate, it leaves (`DEQUEUED`, unmerged); without it, it comes back, passes and merges |
-| checks timeout | 5 | a job that runs past its `timeout` is `TIMED_OUT`, and check fails |
-| requeue | 8, 9 | a failed pull request enters gate again on `regate`, and merges; a push takes a pull request out of gate, and check passing on the new head brings it back, with no other event |
-| labels, the status comment | 6, 8 | `aid/gate` success and failure on the pull request, and a comment naming the failed job |
-| flakes | 8 | the first fails; the second's build on top of it is `ABORTED` and run again without it, passes and merges |
+| `Cheap checks passed` | 2, 7, 10 | check runs the cheap jobs; a draft whose check passed stays out of gate until it is ready; a ready pull request stays out until check passes on its head, and that alone brings it in |
+| `Every package passed` | 7 | gate runs `aid-bazel-everything`, and not check's jobs |
+| batches of 2 | 9 | two pull requests' builds run at once, the second's item behind the first's, in a window of two |
+| fast-forward | 7 | Zuul merges by rebase: `main` moves forward with no merge commit |
+| `hold` | 8 | a ready pull request with `hold` stays out; labelled `hold` in gate, it leaves (`DEQUEUED`, unmerged); without it, it comes back, passes and merges |
+| checks timeout | 6 | a job that runs past its `timeout` is `TIMED_OUT`, and check fails |
+| requeue | 9, 10 | a failed pull request enters gate again on `regate`, and merges; a push takes a pull request out of gate, and check passing on the new head brings it back, with no other event |
+| labels, the status comment | 7, 9 | `aid/gate` success and failure on the pull request, and a comment naming the failed job |
+| flakes | 9 | the first fails; the second's build on top of it is `ABORTED` and run again without it, passes and merges |

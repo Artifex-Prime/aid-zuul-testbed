@@ -9,17 +9,19 @@ GitHub here), and reads the result from Zuul's API and from the commit status Zu
   2. A pull request that adds a job runs that job on itself, before it exists on main.
   3. A pull request that defines a base job in AID's project is refused, with a configuration error.
   4. A pull request that defines a pipeline in AID's project is refused, with a configuration error.
+  5. A proposed job can read the fixture farm token in every phase of check, but none of its
+     pre/run/post/cleanup hooks execute in check-external: the trusted base rejects it first.
 
 Then the gate's rows (../gate.md, "From Mergify to Zuul"), each seen on the test bed's copies:
 
-  5. A job runs no longer than its timeout.
-  6. Ready means queued: a draft whose check passed stays out of gate; once ready, it enters, gate runs the full jobs
+  6. A job runs no longer than its timeout.
+  7. Ready means queued: a draft whose check passed stays out of gate; once ready, it enters, gate runs the full jobs
      (and not check's cheap ones), and Zuul merges it by rebase, so main stays linear.
-  7. The hold label keeps a ready pull request out of gate, and takes one out that is in it; without it, it comes back.
-  8. The speculative queue: two pull requests are tested at once, the second on top of the first, in a window of two.
+  8. The hold label keeps a ready pull request out of gate, and takes one out that is in it; without it, it comes back.
+  9. The speculative queue: two pull requests are tested at once, the second on top of the first, in a window of two.
      The first fails (a flaky test), which starts the second again without it, and the second merges. A "regate"
      comment enqueues the first again, and it merges.
-  9. A ready pull request without hold enters gate when check passes on its head, with no other event. A push takes
+  10. A ready pull request without hold enters gate when check passes on its head, with no other event. A push takes
      it out, and it comes back once check passes on the new head.
 
 Standard library only. Reads GITHUB_TOKEN and ZUUL_WEBHOOK_TOKEN from the environment.
@@ -266,13 +268,14 @@ class Testbed:
 
         buildset = wait(f"{pipeline}'s result on #{number}", done, timeout)
         _, detail = self.zuul.get(f"/buildset/{buildset['uuid']}")
-        results = {build["job_name"]: build["result"] for build in detail.get("builds", [])}
+        self.last_builds = detail.get("builds", [])
+        results = {build["job_name"]: build["result"] for build in self.last_builds}
         log(f"  #{number}: {pipeline} {buildset['result']}, builds {results}")
         return buildset, results
 
-    def check_result(self, pull, timeout=1200):
+    def check_result(self, pull, timeout=1200, pipeline="check"):
         """Waits for the check pipeline's result on the pull request's head; returns the buildset and its builds."""
-        return self.result(pull, "check", timeout)
+        return self.result(pull, pipeline, timeout)
 
     def gate(self):
         """gate's one queue, as Zuul's status shows it: its window, and its items, each with its pull request's
@@ -331,6 +334,12 @@ class Testbed:
         log(f"  #{pull['number']}: GitHub shows {context} {status['state']}: {status['description']}")
         return status["state"]
 
+    def external_comment(self, pull):
+        comment = self.github.repo(f"/issues/{pull['number']}/comments", method="POST", body={"body": "check-external"})
+        issue = self.github.repo(f"/issues/{pull['number']}")
+        self.zuul.send("issue_comment", {"action": "created", "issue": issue, "comment": comment,
+                                       "repository": self.github.repo(), "sender": comment["user"]})
+
     def comments(self, pull):
         return [comment["body"] for comment in self.github.repo(f"/issues/{pull['number']}/comments")]
 
@@ -367,7 +376,7 @@ def expect(condition, message):
 
 def layout_loads(bed):
     log("1. The layout loads")
-    names = {"check", "gate"}
+    names = {"check", "check-external", "gate"}
 
     def loaded():
         _, pipelines = bed.zuul.get("/pipelines", ok=(200, 404))
@@ -469,6 +478,75 @@ def untrusted_pipeline_is_refused(bed):
            f"its comment says why: {comments[-1][:300]!r}")
 
 
+def container_text(container, path):
+    result = subprocess.run(["docker", "exec", os.environ[container], "cat", path],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise Failure(f"cannot read test fixture {path}: {result.stderr[:200]}")
+    return result.stdout
+
+
+def nodes_text(path):
+    """The file on each of the test bed's build nodes (compose.yaml's node and node-2), one after the other; a node
+    whose job did not run there has none."""
+    texts = []
+    for container in ("TESTBED_NODE_ID", "TESTBED_NODE_2_ID"):
+        result = subprocess.run(["docker", "exec", os.environ[container], "cat", path],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode and "No such file" not in result.stderr:
+            raise Failure(f"cannot read test fixture {path}: {result.stderr[:200]}")
+        texts.append(result.stdout if result.returncode == 0 else "")
+    return "".join(texts)
+
+
+def external_job_cannot_read_farm(bed):
+    log("5. check-external is rejected before every untrusted hook, including post and cleanup")
+    job = "aid-testbed-farm-probe"
+    files = {"ci/zuul/zuul.d/testbed-farm.yaml": f"""\
+- job:
+    name: {job}
+    parent: aid-script
+    pre-run: ci/zuul/playbooks/farm-pre.yaml
+    run: ci/zuul/playbooks/farm-run.yaml
+    post-run: ci/zuul/playbooks/farm-post.yaml
+    cleanup-run: ci/zuul/playbooks/farm-cleanup.yaml
+- project:
+    check:
+      jobs: [{job}]
+    check-external:
+      jobs: [{job}]
+"""}
+    for phase in ("pre", "run", "post", "cleanup"):
+        files[f"ci/zuul/playbooks/farm-{phase}.yaml"] = """\
+- hosts: all
+  gather_facts: false
+  tasks:
+    - name: Read the raw fixture credential from proposed code
+      ansible.builtin.shell: |
+        printf '{{ zuul.pipeline }}:PHASE:' >> /tmp/farm-hook-probe
+        cat /var/run/farm/token >> /tmp/farm-hook-probe
+""".replace("PHASE", phase)
+    pull = bed.open_pull_request("external-farm-probe", files, "Probe the external-job farm boundary in every hook")
+    _, builds = bed.check_result(pull)
+    expect(builds.get(job) == "SUCCESS", "the proposed probe actually executes in check")
+    before = nodes_text("/tmp/farm-hook-probe")
+    expected = {f"check:{phase}:testbed-farm-credential" for phase in ("pre", "run", "post", "cleanup")}
+    expect(set(before.splitlines()) == expected and len(before.splitlines()) == 4,
+           "all four untrusted hooks can read the raw token fixture in check")
+    bed.external_comment(pull)
+    buildset, builds = bed.check_result(pull, pipeline="check-external")
+    expect(builds.get(job) == "FAILURE" and buildset["result"] == "FAILURE",
+           "the external probe fails without retries")
+    build = next(build for build in bed.last_builds if build["job_name"] == job)
+    build_uuid = uuid.UUID(build["uuid"]).hex
+    output = container_text("TESTBED_EXECUTOR_ID", f"/var/lib/zuul/builds/{build_uuid}/work/logs/job-output.txt")
+    expect("check-external is blocked until a credential-free node is available" in output,
+           "the failure is the trusted pipeline guard, not a broken job or node")
+    expect(nodes_text("/tmp/farm-hook-probe") == before,
+           "no external pre/run/post/cleanup hook executed or read the token")
+    expect(bed.commit_status(pull, pipeline="check-external") == "failure", "the external failure is reported")
+
+
 # What check and gate run (ci/zuul/zuul.d/project.yaml): the cheap jobs, and the full ones.
 CHEAP = ["aid-seam-lint", "aid-seam-lint-test", "aid-apps-lint", "aid-apps-lint-test"]
 FULL = ["aid-bazel-everything"]
@@ -495,7 +573,7 @@ sleep 600
 
 
 def job_timeout(bed):
-    log("5. A job runs no longer than its timeout")
+    log("6. A job runs no longer than its timeout")
     pull = bed.open_pull_request("timeout", {"ci/zuul/zuul.d/testbed-timeout.yaml": TIMEOUT_JOB,
                                              "ci/testbed-sleep.sh": SLEEP}, "A job that outlives its timeout")
     started = time.monotonic()
@@ -523,7 +601,7 @@ def linear(bed, old, new, pull):
 
 
 def ready_means_queued(bed):
-    log("6. Ready means queued, gate runs the full jobs, and Zuul merges by rebase")
+    log("7. Ready means queued, gate runs the full jobs, and Zuul merges by rebase")
     pull = bed.open_pull_request("ready", behaviour("ready", ["# ready means queued"]),
                                  "Gate: ready means queued", draft=True)
     bed.send_check_passed(pull)
@@ -540,7 +618,7 @@ def ready_means_queued(bed):
 
 
 def hold(bed):
-    log("7. The hold label keeps a pull request out of gate, and takes it out")
+    log("8. The hold label keeps a pull request out of gate, and takes it out")
     until = int(time.time()) + 900
     pull = bed.open_pull_request("hold", behaviour("hold", [f"{until} sleep 60"]), "Gate: hold", draft=True)
     bed.add_label(pull, "hold")
@@ -566,7 +644,7 @@ def hold(bed):
 
 
 def speculative_queue(bed):
-    log("8. Two pull requests at once, a flaky failure, and regate")
+    log("9. Two pull requests at once, a flaky failure, and regate")
     # The first's test fails until flaky_until (a flaky test), long enough for its first gate run and short enough
     # for the regate after it; both sleep, so that their builds are seen running at once.
     sleep_until = int(time.time()) + 900
@@ -612,7 +690,7 @@ def speculative_queue(bed):
 
 
 def new_head_comes_back(bed):
-    log("9. A ready pull request enters gate when check passes on it, and again after a push")
+    log("10. A ready pull request enters gate when check passes on it, and again after a push")
     until = int(time.time()) + 900
     pull = bed.open_pull_request("new-head", behaviour("new-head", [f"{until} sleep 60"]), "Gate: a new head")
     bed.stays_out_of_gate(pull, "check has not passed on it yet", seconds=10)
@@ -642,15 +720,15 @@ def main():
     bed = Testbed(args)
     try:
         for check in (layout_loads, new_job_runs_speculatively, untrusted_base_job_is_refused,
-                      untrusted_pipeline_is_refused, job_timeout, ready_means_queued, hold, speculative_queue,
-                      new_head_comes_back):
+                      untrusted_pipeline_is_refused, external_job_cannot_read_farm, job_timeout, ready_means_queued,
+                      hold, speculative_queue, new_head_comes_back):
             check(bed)
     except Failure as error:
         log(f"FAILED: {error}")
         return 1
     finally:
         bed.cleanup()
-    log("All nine checks passed.")
+    log("All ten checks passed.")
     return 0
 
 

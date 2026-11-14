@@ -25,6 +25,10 @@ config_repository=$(git -C "$config_dest" remote get-url origin | sed -E 's#^(ht
 
 find "$dest" "$config_dest" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 (cd "$config" && find . -mindepth 1 -maxdepth 1 ! -name .git -exec cp -R {} "$config_dest/" \;)
+# Compose's node replaces the production k3s provider for the same aid-node label. Keep the
+# production base job and playbooks; its real provider is tested on k3s, not Compose. The pipeline
+# changes for the workflow's token are below.
+rm -f "$config_dest/zuul.d/providers.yaml"
 mkdir -p "$config_dest/testbed"
 cp "$here/providers.yaml" "$config_dest/testbed/"
 # What the test bed's token cannot do, as patch.py does for Zuul: report check runs (only a GitHub App can) and say
@@ -36,6 +40,7 @@ cp "$here/providers.yaml" "$config_dest/testbed/"
 # github-actions (its GraphQL API, which Zuul reads the requirement from). aid-zuul-config's own files keep check runs
 # and the permission (AIDepartment's deploy/zuul/github.md); every change must apply, or the copy stops.
 pipelines="$config_dest/zuul.d/pipelines.yaml"
+on_check=$(grep -c 'aid-zuul:aid/check:success$' "$pipelines" || true)
 TESTBED_CHECK_STATUS="'github-actions(\\[bot\\])?:aid/check:success'" awk '
   BEGIN { status = ENVIRON["TESTBED_CHECK_STATUS"] }
   /^ +- event: check_run$/ { sub(/check_run$/, "pull_request"); print; checkrun = 1; next }
@@ -53,8 +58,8 @@ TESTBED_CHECK_STATUS="'github-actions(\\[bot\\])?:aid/check:success'" awk '
 if grep -qE '^ +(check|permission): |event: check_run|aid-zuul:' "$pipelines"; then
   echo "$pipelines: a check run or a permission the test bed cannot take is left: look at sync.sh again" >&2; exit 1
 fi
-if [ "$(grep -cF 'github-actions(\[bot\])?:aid/check:success' "$pipelines")" -ne 2 ]; then
-  echo "$pipelines: gate's requirement and trigger on check's result are not both on its status: look at sync.sh again" >&2; exit 1
+if [ "$(grep -cF 'github-actions(\[bot\])?:aid/check:success' "$pipelines")" -ne "$on_check" ]; then
+  echo "$pipelines: not every requirement or trigger on check's result is on its status: look at sync.sh again" >&2; exit 1
 fi
 if [ "$(grep -c '^ *status: failure$' "$pipelines")" -ne "$(grep -A1 '^ *status: failure$' "$pipelines" | grep -c '^ *comment: true$')" ]; then
   echo "$pipelines: a failure reporter does not comment, so a configuration error would not be seen" >&2; exit 1

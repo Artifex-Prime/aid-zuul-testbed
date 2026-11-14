@@ -105,7 +105,8 @@ export function check(root) {
     if (existsSync(at(name))) problems.push(`${name} at the repository's root: AID's jobs are in ${UNTRUSTED}, and Zuul would read both`);
   }
 
-  // The test bed's tenant reads AID's project from its folder, and the config project's copy only for its build node.
+  // The test bed's tenant reads AID's project from its folder, and the config project's copy only for testbed/: its
+  // build node and its jobs with a secret.
   const tenant = tenantPaths(read("ci/zuul/testbed/main.yaml"));
   const configPaths = Object.values(tenant).flatMap((source) => source.config);
   const untrustedPaths = Object.values(tenant).flatMap((source) => source.untrusted);

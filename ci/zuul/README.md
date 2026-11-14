@@ -3,7 +3,8 @@
 What Zuul runs for AID (#1341, #1346), in two repositories:
 
 - **[kristofk/aid-zuul-config](https://github.com/kristofk/aid-zuul-config)**, the config project (trusted): the
-  pipelines, the base job, and the secrets' definitions once #1351 adds them.
+  pipelines, the base job, and the jobs with secrets and their secrets
+  ([`deploy/zuul/job-secrets.md`](../../deploy/zuul/job-secrets.md), #1351).
 - **This folder**, AID's own project (untrusted): the job library, AID's jobs, and which pipeline runs which.
 
 Zuul's deployment, the services that run it, is [`deploy/zuul/`](../../deploy/zuul/README.md). Until Zuul's switch
@@ -103,13 +104,29 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
    untrusted repos" on the pull request;
 5. a proposed job reads a fake raw farm token in every pre/run/post/cleanup hook under `check`, then fails at the
    trusted base guard under `check-external`. The node's probe file remains unchanged, and the executor log must
-   identify the guard failure. No external hook executes, including post and cleanup after the failed pre-run.
+   identify the guard failure. No external hook executes, including post and cleanup after the failed pre-run;
+6. a job with a secret, defined in the config project as `deploy/zuul/job-secrets.md` says, gets it in `post` on
+   `main`: its log and its build's artifact show the fixture's SHA-256, never the value. One whose secret may not go
+   to `post` is failed by aid-zuul-config's guard, `playbooks/secrets/guard.yaml`, before its run playbook;
+7. three pull requests are refused with Zuul's own words: one that lists that job in `check` ("does not allow
+   post-review job"), one with a job inheriting it ("is final and can not act as a parent"), and one with a job naming
+   its secret ("Secrets must be defined in the same project in which they are used").
 
 Zuul has no route from GitHub there, so the test bed sends Zuul the `pull_request` event GitHub would, signed with the
 connection's webhook token. The build node is a container with Bazelisk, a stand-in for #1345's; its provider,
 [`testbed/providers.yaml`](testbed/providers.yaml), goes only into the test bed's copy of aid-zuul-config. It replaces
 the production `zuul.d/providers.yaml` there: Compose cannot reach the k3s pod. Jobs and playbooks are copied unchanged;
 the pipeline adaptations for the workflow's token are below. The production provider needs a separate live test on k3s.
+
+**Secrets.** aid-zuul-config's secrets are encrypted for ThunderBox's project key, which no test bed has, and Zuul
+decrypts every secret a job names as it loads the configuration. So `sync.sh` leaves `zuul.d/secrets.yaml`, and each
+file of `zuul.d/` that defines or names a secret, out of the config copy. In their place it puts the test bed's own:
+[`testbed/secret-probe.yaml`](testbed/secret-probe.yaml), with a fixture secret encrypted by
+`deploy/zuul/encrypt-secret.sh` for a project key it makes. It also lists those jobs in `post` in the test bed's copy
+(`zuul.d/testbed-post.yaml`). [`testbed/import-key.py`](testbed/import-key.py) gives Zuul that key before the scheduler
+starts, as a restore of the keys would (`zuul-admin import-keys`). The key and the fixture are public in the copies,
+and guard nothing. A checkout of aid-zuul-config without the guard runs without checks 6 and 7. aid-zuul-config's own
+jobs with secrets are checked by Zuul on ThunderBox, on the pull request that changes them.
 
 One thing differs from ThunderBox's Zuul: the token. For every pull request, Zuul's GitHub driver asks for the
 repository's branch protection rules, which need the repository's **administration** permission. A workflow's token
@@ -181,7 +198,7 @@ without the test bed's build node:
 - **[`check.mjs`](check.mjs)**, with Node, no packages: the layout's rules. CI's Node tests run it
   ([`../zuul.test.mjs`](../zuul.test.mjs)).
   - no Zuul configuration at the repository's root, and the test bed's tenant reads AID's project from
-    `ci/zuul/zuul.d/` and the config copy only for its build node;
+    `ci/zuul/zuul.d/` and the config copy only for its `testbed/` (its build node and its jobs with a secret);
   - no pipeline and no base job in AID's project;
   - every playbook a job names exists under `ci/zuul/playbooks/`, and every role a playbook names exists beside it;
   - every job of AID's is `aid-bazel` or `aid-script`, or inherits one of them; every role runs only Ansible's

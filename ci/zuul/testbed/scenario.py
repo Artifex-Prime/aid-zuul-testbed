@@ -435,6 +435,10 @@ def post_job_gets_secret(bed):
     digest = hashlib.sha256(bed.args.secret.encode()).hexdigest()
     expect(builds["testbed-secret-probe"]["result"] == "SUCCESS", "the job that may have its secret passed")
     expect(f"testbed secret sha256 {digest}" in probe, "the value that reached it is the fixture's, by its SHA-256")
+    _, found = bed.zuul.get(f"/build/{builds['testbed-secret-probe']['uuid']}")
+    artifacts = {artifact["name"]: artifact.get("metadata", {}) for artifact in found.get("artifacts", [])}
+    expect(artifacts.get("testbed-secret", {}).get("sha256") == digest,
+           "the builds API shows the same, as the build's artifact: how ThunderBox's check is read")
     expect(bed.args.secret not in probe, "the value itself is not in its log")
     guarded = output("testbed-secret-guard-probe")
     expect(builds["testbed-secret-guard-probe"]["result"] == "FAILURE", "the job whose secret may not go to post failed")

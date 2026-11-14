@@ -3,7 +3,8 @@
 What Zuul runs for AID (#1341, #1346), in two repositories:
 
 - **[kristofk/aid-zuul-config](https://github.com/kristofk/aid-zuul-config)**, the config project (trusted): the
-  pipelines, the base job, and the secrets' definitions once #1351 adds them.
+  pipelines, the base job, and the jobs with secrets and their secrets
+  ([`deploy/zuul/job-secrets.md`](../../deploy/zuul/job-secrets.md), #1351).
 - **This folder**, AID's own project (untrusted): the job library, AID's jobs, and which pipeline runs which.
 
 Zuul's deployment, the services that run it, is [`deploy/zuul/`](../../deploy/zuul/README.md). Until Zuul's switch
@@ -110,10 +111,17 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
 6. to 10. the rows of [gate.md](gate.md): a job's timeout; ready means queued, the full jobs in gate and the merge by
    rebase; the `hold` label; two pull requests at once in gate's window, a flaky failure that starts the one behind
    it again, and `regate`; a ready pull request that check's result alone brings into gate, before and after a push
-   (gate.md, "Seen working"). The workflow's token opens these pull requests, and GitHub lets nobody approve their
-   own, so the copy of gate for checks 1 to 10 leaves out its requirement of an approving review ([`sync.sh`](testbed/sync.sh));
-11. the two-agent loop, in a run of its own ([below](#the-two-agent-loop-on-the-test-bed)): gate lets the builder's
-   pull request in only once the reviewer approved its head, and Zuul merges it.
+   (gate.md, "Seen working");
+11. a job with a secret, defined in the config project as `deploy/zuul/job-secrets.md` says, gets it in `post` on
+    `main`: its log and its build's artifact show the fixture's SHA-256, never the value. One whose secret may not go
+    to `post` is failed by aid-zuul-config's guard, `playbooks/secrets/guard.yaml`, before its run playbook;
+12. three pull requests are refused with Zuul's own words: one that lists that job in `check` ("does not allow
+    post-review job"), one with a job inheriting it ("is final and can not act as a parent"), and one with a job naming
+    its secret ("Secrets must be defined in the same project in which they are used"). The workflow's token opens the
+    pull requests of checks 1 to 12, and GitHub lets nobody approve their own, so the copy of gate for them leaves out
+    its requirement of an approving review ([`sync.sh`](testbed/sync.sh));
+13. the two-agent loop, in a run of its own ([below](#the-two-agent-loop-on-the-test-bed)): gate lets the builder's
+    pull request in only once the reviewer approved its head, and Zuul merges it.
 
 Zuul has no route from GitHub there, so the test bed sends Zuul the events GitHub would (`pull_request`,
 `pull_request_review`, `issue_comment`, `status`), signed with the connection's webhook token. The build nodes are two containers with
@@ -123,6 +131,16 @@ k3s pod. The production provider needs a separate live test on k3s. Each script 
 only shows it ran, and the gate's full job runs a stand-in test ([`testbed/workspace/`](testbed/workspace)) that the
 scenario's pull requests tell to sleep or to fail. The base job and its playbooks are copied unchanged; the pipeline
 adaptations for the workflow's token are below.
+
+**Secrets.** aid-zuul-config's secrets are encrypted for ThunderBox's project key, which no test bed has, and Zuul
+decrypts every secret a job names as it loads the configuration. So `sync.sh` leaves `zuul.d/secrets.yaml`, and each
+file of `zuul.d/` that defines or names a secret, out of the config copy. In their place it puts the test bed's own:
+[`testbed/secret-probe.yaml`](testbed/secret-probe.yaml), with a fixture secret encrypted by
+`deploy/zuul/encrypt-secret.sh` for a project key it makes. It also lists those jobs in `post` in the test bed's copy
+(`zuul.d/testbed-post.yaml`). [`testbed/import-key.py`](testbed/import-key.py) gives Zuul that key before the scheduler
+starts, as a restore of the keys would (`zuul-admin import-keys`). The key and the fixture are public in the copies,
+and guard nothing. A checkout of aid-zuul-config without the guard runs without checks 11 and 12. aid-zuul-config's own
+jobs with secrets are checked by Zuul on ThunderBox, on the pull request that changes them.
 
 One thing differs from ThunderBox's Zuul: the token. For every pull request, Zuul's GitHub driver asks for the
 repository's branch protection rules, which need the repository's **administration** permission. A workflow's token
@@ -168,7 +186,7 @@ Check 11 needs two accounts: the builder, who opens the pull request, and the re
 the builder, with your own `gh`, and the run's token the reviewer. It runs alone, after a sync that keeps gate's
 approval (`TESTBED_LOOP=1`), and `main` of the test bed's copy must dismiss an approval when a commit is pushed, as
 AIDepartment's `main` does from #1355 ([`deploy/zuul/github.md`](../../deploy/zuul/github.md), "Branch protection").
-Once, protect it so, with no approval required, which checks 1 to 10 need:
+Once, protect it so, with no approval required, which checks 1 to 12 need:
 
 ```sh
 gh api -X PUT repos/<you>/aid-zuul-testbed/branches/main/protection --input - <<'JSON'
@@ -192,7 +210,7 @@ gh workflow run testbed.yml --repo <you>/aid-zuul-testbed -f loop_pull=$pull
 The scenario plays the GitHub side of both bots on it: check on the draft; ready, a comment review and `regate`, none
 of which lets it in; the reviewer's approval of a held head, then the builder's push after it, which GitHub answers by
 dismissing that approval; the reviewer's approval of the new head, which lets it in. Zuul merges it by rebase, and the
-issue closes. Sync without `TESTBED_LOOP` before the next run of checks 1 to 10.
+issue closes. Sync without `TESTBED_LOOP` before the next run of checks 1 to 12.
 
 ## On ThunderBox
 
@@ -226,7 +244,7 @@ without the test bed's build node:
 - **[`check.mjs`](check.mjs)**, with Node, no packages: the layout's rules. CI's Node tests run it
   ([`../zuul.test.mjs`](../zuul.test.mjs)).
   - no Zuul configuration at the repository's root, and the test bed's tenant reads AID's project from
-    `ci/zuul/zuul.d/` and the config copy only for its build node;
+    `ci/zuul/zuul.d/` and the config copy only for its `testbed/` (its build node and its jobs with a secret);
   - no pipeline and no base job in AID's project;
   - every playbook a job names exists under `ci/zuul/playbooks/`, and every role a playbook names exists beside it;
   - every job of AID's is `aid-bazel` or `aid-script`, or inherits one of them; every role runs only Ansible's

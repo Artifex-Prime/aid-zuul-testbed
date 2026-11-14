@@ -24,11 +24,18 @@ Then the gate's rows (../gate.md, "From Mergify to Zuul"), each seen on the test
   10. A ready pull request without hold enters gate when check passes on its head, with no other event. A push takes
      it out, and it comes back once check passes on the new head.
 
-Checks 7 to 10 run with a copy of gate that leaves out its requirement of an approving review (sync.sh): the run's
-token opens their pull requests, and nobody may approve their own. Check 11 runs alone (--loop-pull), with a copy that
+Then the secrets for jobs (deploy/zuul/job-secrets.md), when sync.sh added the test bed's jobs with a secret:
+
+  11. A job with a secret, defined in the config project, gets it in post on main; one whose secret may not go to
+     post is failed by the trusted guard before its run playbook.
+  12. A pull request cannot have that secret: Zuul refuses it in check, a job inheriting the job, and a job naming the
+     secret.
+
+Checks 1 to 12 run with a copy of gate that leaves out its requirement of an approving review (sync.sh): the run's
+token opens their pull requests, and nobody may approve their own. Check 13 runs alone (--loop-pull), with a copy that
 keeps it (TESTBED_LOOP=1), on a pull request that the builder opened as someone else:
 
-  11. The two-agent loop (../gate.md, "The two-agent loop"): the builder's draft passes check; ready, a comment review
+  13. The two-agent loop (../gate.md, "The two-agent loop"): the builder's draft passes check; ready, a comment review
      and "regate" each leave it out of gate; the reviewer's approval of a held head, and the builder's push after it,
      leave it out, as GitHub dismisses that approval; the reviewer's approval of the new head lets it in, Zuul merges
      it, and its issue closes.
@@ -37,6 +44,7 @@ Standard library only. Reads GITHUB_TOKEN and ZUUL_WEBHOOK_TOKEN from the enviro
 """
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -415,6 +423,16 @@ def layout_loads(bed):
     _, jobs = bed.zuul.get("/jobs")
     expect({"base", "aid-bazel", "aid-script", "aid-seam-lint"} <= {job["name"] for job in jobs},
            "the base job and AID's job library are loaded")
+    if bed.args.secret:
+        expect({"testbed-secret-probe", "testbed-secret-guard-probe"} <= {job["name"] for job in jobs},
+               "the test bed's jobs with a secret are loaded: Zuul decrypted the fixture with the imported key")
+        # The key is PEM, not JSON.
+        with urllib.request.urlopen(f"{bed.zuul.url}/api/tenant/{bed.zuul.tenant}/key/{bed.args.config_repository}.pub",
+                                    timeout=60) as response:
+            status, key = response.status, response.read().decode()
+        fixture = subprocess.run(["openssl", "pkey", "-in", bed.args.project_key, "-pubout"],
+                                 capture_output=True, text=True, check=True).stdout
+        expect(status == 200 and der(key) == der(fixture), "the config copy's key in Zuul is the test bed's own")
 
 
 NEW_JOB = """\
@@ -731,8 +749,112 @@ def new_head_comes_back(bed):
     log(f"  ok: #{pull['number']} merged")
 
 
+def der(pem):
+    """A public key in PEM, as its DER bytes: the same key, whatever the line breaks."""
+    body = "".join(line for line in pem.strip().splitlines() if not line.startswith("-----"))
+    return base64.b64decode(body)
+
+
+def post_job_gets_secret(bed):
+    log("11. A job with a secret gets it in post, on main; the guard fails one whose secret may not go there")
+    main = bed.github.repo("/commits/main")
+    repository = bed.github.repo()
+    before = main["parents"][0]["sha"] if main["parents"] else "0" * 40
+    bed.zuul.send("push", {"ref": "refs/heads/main", "before": before, "after": main["sha"], "commits": [],
+                           "repository": repository, "sender": {"login": repository["owner"]["login"]}})
+    query = urllib.parse.urlencode({"project": bed.args.repository, "pipeline": "post", "complete": "true"})
+    names = {"testbed-secret-probe", "testbed-secret-guard-probe"}
+
+    def done():
+        _, builds = bed.zuul.get(f"/builds?{query}")
+        # Zuul 14 gives each build its ref as an object: {project, ref, newrev, ...}.
+        mine = [build for build in builds if (build.get("ref") or {}).get("newrev") == main["sha"]]
+        return names <= {build["job_name"] for build in mine} and mine
+
+    builds = {build["job_name"]: build for build in wait("post's builds on main", done, 900)}
+    log(f"  post on main at {main['sha'][:12]}: " + str({name: build["result"] for name, build in builds.items()}))
+    expect(all(build["ref"]["ref"] == "refs/heads/main" and not build["ref"].get("change") for build in builds.values()),
+           "post ran on main, a ref, not a change")
+
+    def output(name):
+        build_uuid = uuid.UUID(builds[name]["uuid"]).hex
+        return container_text("TESTBED_EXECUTOR_ID", f"/var/lib/zuul/builds/{build_uuid}/work/logs/job-output.txt")
+
+    probe = output("testbed-secret-probe")
+    digest = hashlib.sha256(bed.args.secret.encode()).hexdigest()
+    expect(builds["testbed-secret-probe"]["result"] == "SUCCESS", "the job that may have its secret passed")
+    expect(f"testbed secret sha256 {digest}" in probe, "the value that reached it is the fixture's, by its SHA-256")
+    _, found = bed.zuul.get(f"/build/{builds['testbed-secret-probe']['uuid']}")
+    artifacts = {artifact["name"]: artifact.get("metadata", {}) for artifact in found.get("artifacts", [])}
+    expect(artifacts.get("testbed-secret", {}).get("sha256") == digest,
+           "the builds API shows the same, as the build's artifact: how ThunderBox's check is read")
+    expect(bed.args.secret not in probe, "the value itself is not in its log")
+    guarded = output("testbed-secret-guard-probe")
+    expect(builds["testbed-secret-guard-probe"]["result"] == "FAILURE", "the job whose secret may not go to post failed")
+    expect("has a secret, and runs only on a merged ref" in " ".join(guarded.split()),
+           "the guard failed it, not anything else")
+    expect("testbed secret sha256" not in guarded, "its run playbook, which uses the secret, never ran")
+
+
+SECRET_IN_CHECK = """\
+- project:
+    check:
+      jobs:
+        - testbed-secret-probe
+"""
+
+SECRET_CHILD = """\
+- job:
+    name: testbed-secret-child
+    parent: testbed-secret-probe
+    run: ci/zuul/playbooks/script.yaml
+- project:
+    check:
+      jobs:
+        - testbed-secret-child
+"""
+
+SECRET_NAMED = """\
+- job:
+    name: testbed-secret-taker
+    parent: aid-script
+    # A playbook of its own, which the secret goes to: Zuul checks a secret's project on the playbooks it reaches, in
+    # any pipeline. Without one the secret reaches nothing, and only post-review refuses the job.
+    run: ci/zuul/playbooks/script.yaml
+    secrets:
+      - name: testbed_secret
+        secret: testbed-secret
+    vars:
+      script: scripts/seam-lint.sh
+      script_args: [--project, aid]
+- project:
+    check:
+      jobs:
+        - testbed-secret-taker
+"""
+
+
+def pull_request_cannot_have_secret(bed):
+    log("12. A pull request cannot have the secret")
+    cases = [
+        ("secret-in-check", SECRET_IN_CHECK, "The job with the secret in check",
+         # Zuul's words (model.py, the job graph's pending errors).
+         "Pre-review pipeline check does not allow post-review job testbed-secret-probe"),
+        ("secret-child", SECRET_CHILD, "A job of AID's inheriting the job with the secret",
+         'The parent of job "testbed-secret-child", "testbed-secret-probe" is final and can not act as a parent'),
+        ("secret-named", SECRET_NAMED, "A job of AID's naming the config project's secret",
+         "Unable to use secret testbed-secret. Secrets must be defined in the same project in which they are used"),
+    ]
+    for name, text, title, words in cases:
+        pull = bed.open_pull_request(name, {f"ci/zuul/zuul.d/testbed-{name}.yaml": text}, title)
+        expect(bed.commit_status(pull, timeout=600) == "failure", f"{title}: Zuul reported failure")
+        comments = wait(f"Zuul's comment on #{pull['number']}", lambda: bed.comments(pull), 120)
+        expect(any(words in " ".join(body.split()) for body in comments), f"{title}: refused, {words!r}")
+        _, builds = bed.zuul.get(f"/builds?project={urllib.parse.quote(bed.args.repository)}&change={pull['number']}")
+        expect(not [build for build in builds if build["job_name"].startswith("testbed-secret")
+                    and build["result"] == "SUCCESS"], f"{title}: no job of the pull request's with the secret ran")
 def two_agent_loop(bed, number):
-    log("11. The two-agent loop: the builder's pull request enters gate only once the reviewer approved its head")
+    log("13. The two-agent loop: the builder's pull request enters gate only once the reviewer approved its head")
     pull = bed.pull({"number": number})
     expect(pull["state"] == "open" and pull["draft"], f"the builder's #{number} is an open draft")
     bed.opened.append(number)
@@ -778,9 +900,21 @@ def two_agent_loop(bed, number):
     merged = bed.merged(pull)
     expect(merged["merged_by"] is not None, f"Zuul merged it (as {merged['merged_by']['login']})")
     linear(bed, old, bed.main_head(), pull)
-    issue = wait(f"#{issues[0]} closed", lambda: (body := bed.github.repo(f"/issues/{issues[0]}"))["state"] == "closed"
-                 and body, 120)
-    expect(issue["state_reason"] == "completed", f"and its issue #{issues[0]} closed, completed")
+    # GitHub closed no issue for a merge by the workflow's token on the test bed (run 43622489690): the pull request
+    # still named it as the issue it closes. On ThunderBox, Zuul merges as its App. So the issue is closed here, as
+    # completed, once the merge is seen.
+    linked = bed.github.call("POST", "/graphql",
+                             body={"query": query, "variables": {"o": owner, "r": name, "n": number}})
+    expect([node["number"] for node in linked["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]]
+           == issues, f"the merged pull request still closes #{issues[0]}")
+    issue = bed.github.repo(f"/issues/{issues[0]}")
+    if issue["state"] == "open":
+        log(f"  #{issues[0]}: GitHub did not close it for the merge by {merged['merged_by']['login']}: closing it")
+        bed.github.repo(f"/issues/{issues[0]}/comments", method="POST",
+                        body={"body": f"Done: #{number} was reviewed, gated and merged by Zuul."})
+        issue = bed.github.repo(f"/issues/{issues[0]}", method="PATCH",
+                                body={"state": "closed", "state_reason": "completed"})
+    expect(issue["state"] == "closed" and issue["state_reason"] == "completed", f"#{issues[0]} is done")
 
 
 def main():
@@ -790,18 +924,22 @@ def main():
     parser.add_argument("--repository", required=True, help="the test bed's copy of AIDepartment, owner/name")
     parser.add_argument("--config-repository", required=True, help="its copy of kristofk/aid-zuul-config, owner/name")
     parser.add_argument("--checkout", required=True, help="a checkout of it, that can push")
+    parser.add_argument("--secret", default="", help="the fixture secret sync.sh encrypted; none skips checks 11 and 12")
+    parser.add_argument("--project-key", help="the test bed's project key for the config copy, sync.sh's")
     parser.add_argument("--loop-pull", type=int,
-                        help="the builder's pull request: run the two-agent loop's check (11) alone, on it")
+                        help="the builder's pull request: run the two-agent loop's check (13) alone, on it")
     args = parser.parse_args()
     bed = Testbed(args)
     if args.loop_pull:
-        checks = (layout_loads, lambda bed: two_agent_loop(bed, args.loop_pull))
-        passed = "The layout loads, and the two-agent loop's check passed."
+        checks = [layout_loads, lambda bed: two_agent_loop(bed, args.loop_pull)]
     else:
-        checks = (layout_loads, new_job_runs_speculatively, untrusted_base_job_is_refused,
+        checks = [layout_loads, new_job_runs_speculatively, untrusted_base_job_is_refused,
                   untrusted_pipeline_is_refused, external_job_cannot_read_farm, job_timeout, ready_means_queued,
-                  hold, speculative_queue, new_head_comes_back)
-        passed = "All ten checks passed."
+                  hold, speculative_queue, new_head_comes_back]
+        if args.secret:
+            checks += [post_job_gets_secret, pull_request_cannot_have_secret]
+        else:
+            log("Checks 11 and 12 are left out: the aid-zuul-config checkout has no secrets guard (sync.sh).")
     try:
         for check in checks:
             check(bed)
@@ -810,7 +948,7 @@ def main():
         return 1
     finally:
         bed.cleanup()
-    log(passed)
+    log(f"All {len(checks)} checks passed.")
     return 0
 
 

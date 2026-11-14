@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       loop_pull:
-        description: The builder's pull request for the two-agent loop's check (11) alone; empty runs checks 1 to 10
+        description: The builder's pull request for the two-agent loop's check (13) alone; empty runs checks 1 to 12
         required: false
         default: ""
 permissions:

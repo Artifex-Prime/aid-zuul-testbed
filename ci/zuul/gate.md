@@ -67,7 +67,7 @@ switch (#1355) Mergify still merges, and the commands are its own ([`docs/develo
   Ready and the approval are both triggers, so whichever comes second enqueues it. Only the reviewer, or Kristóf, can
   approve: GitHub lets nobody approve their own pull request, and the accounts with write access are `kristofk`,
   `Opifex-Magnus` and `Artifex-Prime`. Without the approval, ready, a comment review or a `regate` comment lets in
-  nothing (the test bed's check 11).
+  nothing (the test bed's check 13).
 - **An approval covers the head it approved.** Zuul reads each reviewer's newest review, not the commit it was of
   (its GitHub driver's `getPullReviews`). What keeps a push after the approval from riding in on it is GitHub: from
   #1355, `main`'s protection dismisses an approval when a commit is pushed

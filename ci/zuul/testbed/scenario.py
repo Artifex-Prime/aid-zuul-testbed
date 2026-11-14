@@ -145,7 +145,7 @@ class Testbed:
         return result.stdout.strip()
 
     def commit(self, files, message):
-        """Writes the files (None deletes one) on top of origin/main, commits them, and returns the commit."""
+        """Writes the files (None deletes one; a .sh executable) on top of origin/main, commits them, and returns the commit."""
         self.git("fetch", "--quiet", "origin", "main")
         self.git("checkout", "--quiet", "--detach", "origin/main")
         for path, content in files.items():
@@ -156,6 +156,8 @@ class Testbed:
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w") as handle:
                 handle.write(content)
+            # A script a job runs as ./<script> must be executable, in the commit too.
+            os.chmod(full, 0o755 if path.endswith(".sh") else 0o644)
             self.git("add", path)
         self.git("commit", "--quiet", "-m", message)
         return self.git("rev-parse", "HEAD")

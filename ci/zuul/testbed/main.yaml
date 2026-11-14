@@ -1,0 +1,27 @@
+# The test bed's tenant (../README.md, "The test bed"): the layout ThunderBox's tenant takes, read from the test bed's
+# two repositories, which run.sh puts in: @CONFIG_REPOSITORY@, a copy of kristofk/aid-zuul-config, as the config
+# project (trusted, from main only), and @REPOSITORY@, a copy of AIDepartment's ci/zuul/, as AID's own project
+# (untrusted, and tested speculatively).
+- tenant:
+    name: aid
+    source:
+      github:
+        config-projects:
+          - @CONFIG_REPOSITORY@:
+              load-branch: main
+              # Its own check, which needs to know how GitHub may merge into it: the run's token, which cannot push
+              # there, is told no way at all, and Zuul refuses the stanza ("Merge mode merge not supported").
+              exclude:
+                - project
+              # The test bed's build node, which sync.sh adds to the copy.
+              extra-config-paths:
+                - testbed/
+        untrusted-projects:
+          - @REPOSITORY@:
+              extra-config-paths:
+                - ci/zuul/zuul.d/
+      opendev.org:
+        untrusted-projects:
+          - zuul/zuul-jobs:
+              include:
+                - job

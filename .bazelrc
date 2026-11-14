@@ -1,0 +1,5 @@
+# The test bed's .bazelrc (sync.sh puts it at the copy's root): the config aid-bazel-everything names, as AIDepartment's
+# .bazelrc has it. The build nodes keep Bazel's output between builds, so a test runs again each time: what it does
+# depends on the clock (gate_test.sh), not only on its inputs.
+common:ci --nocache_test_results
+common:ci --test_output=all

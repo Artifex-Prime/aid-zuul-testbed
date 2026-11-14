@@ -423,12 +423,14 @@ def post_job_gets_secret(bed):
 
     def done():
         _, builds = bed.zuul.get(f"/builds?{query}")
-        mine = [build for build in builds if build.get("newrev") == main["sha"]]
+        # Zuul 14 gives each build its ref as an object: {project, ref, newrev, ...}.
+        mine = [build for build in builds if (build.get("ref") or {}).get("newrev") == main["sha"]]
         return names <= {build["job_name"] for build in mine} and mine
 
     builds = {build["job_name"]: build for build in wait("post's builds on main", done, 900)}
     log(f"  post on main at {main['sha'][:12]}: " + str({name: build["result"] for name, build in builds.items()}))
-    expect(all(build["ref"] == "refs/heads/main" for build in builds.values()), "post ran on main, a ref, not a change")
+    expect(all(build["ref"]["ref"] == "refs/heads/main" and not build["ref"].get("change") for build in builds.values()),
+           "post ran on main, a ref, not a change")
 
     def output(name):
         build_uuid = uuid.UUID(builds[name]["uuid"]).hex

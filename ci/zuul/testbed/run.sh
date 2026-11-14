@@ -23,10 +23,11 @@ logs() {
   # The end of each failed build's output (compose.yaml keeps the executor's build folders).
   echo "== the failed builds' output"
   # shellcheck disable=SC2016 # expanded in the executor's shell
-  "${compose[@]}" exec -T executor sh -c 'for output in /var/lib/zuul/builds/*/work/logs/job-output.txt; do
-      grep -qE "failed=[1-9]|unreachable=[1-9]" "$output" || continue
+  "${compose[@]}" exec -T executor sh -c 'ls /var/lib/zuul/builds
+    for output in /var/lib/zuul/builds/*/work/logs/job-output.txt; do
+      grep -qE "FAILED|fatal:|failed=[1-9]|unreachable=[1-9]" "$output" || continue
       echo "--- $output"; tail -n 60 "$output"
-    done' || true
+    done' 2>&1 || true
 }
 finish() {
   local status=$?

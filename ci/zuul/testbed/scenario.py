@@ -238,7 +238,9 @@ class Testbed:
         pull = self.pull(pull)
         review = self.github.repo(f"/pulls/{pull['number']}/reviews", method="POST",
                                   body={"commit_id": pull["head"]["sha"], "event": event, "body": body})
-        self.zuul.send("pull_request_review", {"action": "submitted", "review": review, "pull_request": pull,
+        # GitHub's REST API says APPROVED, its webhook approved, which is what gate's trigger matches.
+        sent = {**review, "state": review["state"].lower()}
+        self.zuul.send("pull_request_review", {"action": "submitted", "review": sent, "pull_request": pull,
                                                "repository": self.github.repo(), "sender": review["user"]})
         log(f"  #{pull['number']}: {review['user']['login']} reviewed {pull['head']['sha'][:12]}: {review['state']}")
         return review
@@ -737,7 +739,8 @@ def two_agent_loop(bed, number):
     query = ("query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n) "
              "{ closingIssuesReferences(first: 5) { nodes { number } } } } }")
     owner, name = bed.args.repository.split("/")
-    closes = bed.github.call("POST", "/graphql", body={"query": query, "variables": {"o": owner, "r": name, "n": number}})
+    closes = bed.github.call("POST", "/graphql",
+                             body={"query": query, "variables": {"o": owner, "r": name, "n": number}})
     issues = [node["number"] for node in
               closes["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["nodes"]]
     expect(len(issues) == 1 and bed.github.repo(f"/issues/{issues[0]}")["state"] == "open",

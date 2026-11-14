@@ -1,6 +1,8 @@
-# The test bed's .bazelrc (sync.sh puts it at the copy's root): the config aid-bazel-everything names, as AIDepartment's
-# .bazelrc has it. The build nodes keep Bazel's output between builds, so a test runs again each time: what it does
-# depends on the clock (gate_test.sh), not only on its inputs.
+# The test bed's .bazelrc (sync.sh puts it at the copy's root): the configs aid-bazel-everything names. The test bed has
+# no farm, so its `zuul` builds here; AIDepartment's sends every action to the farm, with the hermetic toolchain.
+common:zuul --announce_rc
+# The build nodes keep Bazel's output between builds, so a test runs again each time: what it does depends on the clock
+# (gate_test.sh), not only on its inputs.
 common:ci --nocache_test_results
 common:ci --test_output=all
 # Bazel 9.3.2 with analysis and execution merged (its default) fails this sh_test on a warm output base: the test's

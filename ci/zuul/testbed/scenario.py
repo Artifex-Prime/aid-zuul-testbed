@@ -19,6 +19,8 @@ Then the gate's rows (../gate.md, "From Mergify to Zuul"), each seen on the test
   8. The speculative queue: two pull requests are tested at once, the second on top of the first, in a window of two.
      The first fails (a flaky test), which starts the second again without it, and the second merges. A "regate"
      comment enqueues the first again, and it merges.
+  9. A ready pull request without hold enters gate when check passes on its head, with no other event. A push takes
+     it out, and it comes back once check passes on the new head.
 
 Standard library only. Reads GITHUB_TOKEN and ZUUL_WEBHOOK_TOKEN from the environment.
 """
@@ -144,11 +146,11 @@ class Testbed:
             raise Failure(f"git {' '.join(args)}: {result.stderr.strip()}")
         return result.stdout.strip()
 
-    def commit(self, files, message):
-        """Writes the files (None deletes one; a .sh is executable) on top of origin/main, commits them, and returns the
-        commit."""
-        self.git("fetch", "--quiet", "origin", "main")
-        self.git("checkout", "--quiet", "--detach", "origin/main")
+    def commit(self, files, message, base="main"):
+        """Writes the files (None deletes one; a .sh is executable) on top of origin's base branch, commits them, and
+        returns the commit."""
+        self.git("fetch", "--quiet", "origin", base)
+        self.git("checkout", "--quiet", "--detach", f"origin/{base}")
         for path, content in files.items():
             full = os.path.join(self.worktree, path)
             if content is None:
@@ -176,6 +178,16 @@ class Testbed:
         log(f"  opened #{pull['number']}{' as a draft' if draft else ''} ({branch} at {sha[:12]}): {title}")
         self.send_pull_request("opened", pull)
         return pull
+
+    def push(self, pull, files, message):
+        """Pushes a commit onto the pull request's branch, sends Zuul the event GitHub would, and returns the pull
+        request with its new head."""
+        branch = pull["head"]["ref"]
+        sha = self.commit(files, message, base=branch)
+        self.git("push", "--quiet", "origin", f"HEAD:refs/heads/{branch}")
+        wait(f"#{pull['number']}'s new head on GitHub", lambda: self.pull(pull)["head"]["sha"] == sha, 120, interval=2)
+        log(f"  pushed {sha[:12]} to #{pull['number']}: {message}")
+        return self.send_pull_request("synchronize", pull)
 
     def pull(self, pull):
         """The pull request as GitHub has it now."""
@@ -599,6 +611,26 @@ def speculative_queue(bed):
     log(f"  ok: #{first['number']} merged")
 
 
+def new_head_comes_back(bed):
+    log("9. A ready pull request enters gate when check passes on it, and again after a push")
+    until = int(time.time()) + 900
+    pull = bed.open_pull_request("new-head", behaviour("new-head", [f"{until} sleep 60"]), "Gate: a new head")
+    bed.stays_out_of_gate(pull, "check has not passed on it yet", seconds=10)
+    bed.send_check_passed(pull)
+    bed.running_in_gate(pull)
+    pull = bed.push(pull, behaviour("new-head-2", ["# a second commit"]), "Gate: a new head, pushed while in gate")
+    wait(f"#{pull['number']} out of gate", lambda: not bed.in_gate(pull), 120, interval=2)
+    log(f"  ok: the push took #{pull['number']} out of gate")
+    expect(bed.commit_status(pull) == "success", f"check passed on #{pull['number']}'s new head")
+    bed.stays_out_of_gate(pull, "Zuul has not yet heard that check passed on its new head", seconds=20)
+    bed.send_check_passed(pull)
+    buildset, builds = bed.result(pull, "gate")
+    expect(buildset["result"] == "SUCCESS" and builds == {job: "SUCCESS" for job in FULL},
+           "check's success alone brought the new head into gate, with no ready, label or comment event, and it passed")
+    bed.merged(pull)
+    log(f"  ok: #{pull['number']} merged")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--zuul", required=True, help="zuul-web's URL")
@@ -610,14 +642,15 @@ def main():
     bed = Testbed(args)
     try:
         for check in (layout_loads, new_job_runs_speculatively, untrusted_base_job_is_refused,
-                      untrusted_pipeline_is_refused, job_timeout, ready_means_queued, hold, speculative_queue):
+                      untrusted_pipeline_is_refused, job_timeout, ready_means_queued, hold, speculative_queue,
+                      new_head_comes_back):
             check(bed)
     except Failure as error:
         log(f"FAILED: {error}")
         return 1
     finally:
         bed.cleanup()
-    log("All eight checks passed.")
+    log("All nine checks passed.")
     return 0
 
 

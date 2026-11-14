@@ -71,5 +71,7 @@
       base job's 2-hour timeout (ci/zuul/gate.md, "Timeouts").
     vars:
       bazel_command: test
-      bazel_flags: [--config=ci]
+      # On the build farm, from a node with no compiler (#1345): .bazelrc's `zuul`, the farm by the cluster's address,
+      # the hermetic toolchain and no local fallback, under `dev`; the gate's `main` comes with its own nodes (#1351).
+      bazel_flags: [--config=ci, --config=zuul]
       bazel_targets: ["//..."]

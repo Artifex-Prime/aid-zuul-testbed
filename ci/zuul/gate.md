@@ -43,9 +43,10 @@ Each of these is a difference from today, kept on purpose or open for a later is
   (`reset_on_external_merge`). Zuul's builds go on against the `main` they started from, and GitHub's rebase then puts
   their commits on the newer one. From #1355 only Zuul moves `main` but for the orchestrator's `internal/`-only state
   commits, which no job tests; #1348 decides whether those wait for an empty gate.
-- **`hold` leaves `aid/gate` as it was.** Zuul removes a superseded item without a dequeue report, so a pull request
-  taken out by `hold` keeps its `aid/gate` check run queued or in progress until it enters gate again, or a push
-  starts a new one. It never shows success, so branch protection still refuses it (#1355).
+- **`hold` leaves `aid/gate` as it was.** Zuul removes a superseded item without a dequeue report (the scheduler's
+  `_doSupercedeEvent`, `removeItem`): its buildset is recorded `DEQUEUED`, but a pull request taken out by `hold`
+  keeps its `aid/gate` check run queued or in progress (pending on the test bed) until it enters gate again, or a
+  push starts a new one. It never shows success, so branch protection still refuses it (#1355).
 - **No labels.** `queued` and `dequeued` were Mergify's labels; `aid/gate`'s state shows the same in lists.
 - **The gate's own check.** Zuul runs `check`'s cheap jobs once per head and gate's full ones once per speculative
   state. A failure that a rebase onto newer pull requests caused shows in gate, as it shows in Mergify's queue draft.
@@ -66,6 +67,23 @@ job's `timeout: 7200` (aid-zuul-config's `zuul.d/jobs.yaml`), and less where a j
 minutes). Waiting for a build node counts against no timeout. A job that runs out is `TIMED_OUT`, which fails its
 buildset. The app images become jobs of their own (#1350, #1353), each with its own timeout, so no limit has to cover
 them all one after another.
+
+## The full job on a build node
+
+`aid-bazel-everything` runs `bazel test --config=ci --config=zuul //...`. `.bazelrc`'s `zuul` is the farm as a Zuul
+build node reaches it (#1345's node, `deploy/zuul/node/`):
+
+- **the cluster's address**, `frontend.build-farm.svc:8980`, as CI's runner pods reach it. The node's own system
+  bazelrc names its credential helper for that host. `--config=remote` alone would not do: the checkout's `.bazelrc`
+  is read after the node's system one, and its `remote` names the boxes' address, `build-farm:8980`;
+- **the hermetic toolchain** (`--config=hermetic`): a node has no Swift and no C compiler, and without a `swiftc` on
+  PATH rules_swift makes no toolchain at all (`swift_autoconfiguration`). swift.org's toolchain, downloaded on the
+  node, runs on the farm's workers;
+- **no local fallback**: an action the farm can't run fails, rather than run on a node that can't build it.
+
+Under `dev`, remote's instance: #1345's node is the pull requests', and the gate's `main` (#1298) comes with its own
+nodes and credential (#1351). Not yet run on the node itself, which is not deployed: #1353's shadow runs it there
+first, with the node's 768 MiB Bazel heap and 6 GiB of scratch for the toolchain.
 
 ## Speculative depth
 
@@ -101,19 +119,24 @@ too, which is one more reason the window stays at two until the flake handling m
 ## Seen working
 
 The test bed ([README.md](README.md), "The test bed") runs each row on Zuul 14.3.0, with copies of this folder and of
-kristofk/aid-zuul-config ([`testbed/scenario.py`](testbed/scenario.py), checks 5 to 8; check 2 for check's cheap jobs).
+kristofk/aid-zuul-config ([`testbed/scenario.py`](testbed/scenario.py), checks 5 to 9; check 2 for check's cheap jobs).
 The gate's full job runs a stand-in test there ([`testbed/workspace/`](testbed/workspace)) that each pull request of
-the scenario tells to sleep or to fail. On the test bed, check reports a commit status instead of a check run, so gate's
+the scenario tells to sleep or to fail, so the test bed shows the pipelines, not AID's build on the farm
+([The full job on a build node](#the-full-job-on-a-build-node)). On the test bed, check reports a commit status instead of a check run, so gate's
 requirement and trigger read that status ([`testbed/sync.sh`](testbed/sync.sh)).
+
+Run [43598267803](https://github.com/Artifex-Prime/aid-zuul-testbed/actions/runs/43598267803) on 2026-11-14, of
+AIDepartment's `ci/zuul` at `d3418639` and kristofk/aid-zuul-config at `d466b39f` (#1347's branches), passed all eight
+checks in 15 minutes:
 
 | Row | Check | Seen |
 |---|---|---|
-| `Cheap checks passed` | 2, 6 | check runs the cheap jobs; a draft whose check passed stays out of gate until it is ready |
+| `Cheap checks passed` | 2, 6, 9 | check runs the cheap jobs; a draft whose check passed stays out of gate until it is ready; a ready pull request stays out until check passes on its head, and that alone brings it in |
 | `Every package passed` | 6 | gate runs `aid-bazel-everything`, and not check's jobs |
-| batches of 2 | 8 | two pull requests' builds run at once, the second on top of the first, in a window of two |
+| batches of 2 | 8 | two pull requests' builds run at once, the second's item behind the first's, in a window of two |
 | fast-forward | 6 | Zuul merges by rebase: `main` moves forward with no merge commit |
-| `hold` | 7 | a ready pull request with `hold` stays out; labelled `hold` in gate, it leaves; without it, it comes back and merges |
+| `hold` | 7 | a ready pull request with `hold` stays out; labelled `hold` in gate, it leaves (`DEQUEUED`, unmerged); without it, it comes back, passes and merges |
 | checks timeout | 5 | a job that runs past its `timeout` is `TIMED_OUT`, and check fails |
-| requeue | 8 | a failed pull request enters gate again on `regate`, and merges |
+| requeue | 8, 9 | a failed pull request enters gate again on `regate`, and merges; a push takes a pull request out of gate, and check passing on the new head brings it back, with no other event |
 | labels, the status comment | 6, 8 | `aid/gate` success and failure on the pull request, and a comment naming the failed job |
-| flakes | 8 | the first fails, the second is tested again without it and merges |
+| flakes | 8 | the first fails; the second's build on top of it is `ABORTED` and run again without it, passes and merges |

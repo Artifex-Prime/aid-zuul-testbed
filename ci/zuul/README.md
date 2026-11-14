@@ -103,9 +103,10 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
    config projects" on the pull request;
 4. a pull request that defines a pipeline in AID's project fails, with Zuul's "Pipelines may not be defined in
    untrusted repos" on the pull request;
-5. to 8. the rows of [gate.md](gate.md): a job's timeout; ready means queued, the full jobs in gate and the merge by
+5. to 9. the rows of [gate.md](gate.md): a job's timeout; ready means queued, the full jobs in gate and the merge by
    rebase; the `hold` label; two pull requests at once in gate's window, a flaky failure that starts the one behind
-   it again, and `regate` (gate.md, "Seen working").
+   it again, and `regate`; a ready pull request that check's result alone brings into gate, before and after a push
+   (gate.md, "Seen working").
 
 Zuul has no route from GitHub there, so the test bed sends Zuul the events GitHub would (`pull_request`,
 `issue_comment`, `status`), signed with the connection's webhook token. The build nodes are two containers with
@@ -149,7 +150,7 @@ gh workflow run testbed.yml --repo <you>/aid-zuul-testbed
 gh run watch --repo <you>/aid-zuul-testbed --exit-status "$(gh run list --repo <you>/aid-zuul-testbed --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
 
-The run takes about 4 minutes. It closes its pull requests and deletes their branches; `sync.sh` puts `main` back.
+The run takes about 15 minutes, most of it the gate's checks. It closes the pull requests Zuul did not merge and deletes their branches; `sync.sh` puts `main` back.
 A failed run prints every service's log.
 
 ## On ThunderBox

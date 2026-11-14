@@ -20,6 +20,13 @@ compose=(docker compose --project-directory "$here" -f "$here/compose.yaml" --en
 logs() {
   echo "== the services' logs"
   "${compose[@]}" logs --no-color --timestamps || true
+  # The end of each failed build's output (compose.yaml keeps the executor's build folders).
+  echo "== the failed builds' output"
+  # shellcheck disable=SC2016 # expanded in the executor's shell
+  "${compose[@]}" exec -T executor sh -c 'for output in /var/lib/zuul/builds/*/work/logs/job-output.txt; do
+      grep -qE "failed=[1-9]|unreachable=[1-9]" "$output" || continue
+      echo "--- $output"; tail -n 60 "$output"
+    done' || true
 }
 finish() {
   local status=$?

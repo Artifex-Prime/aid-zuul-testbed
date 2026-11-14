@@ -79,7 +79,9 @@ services:
   executor:
     <<: *zuul
     image: ${ZUUL_EXECUTOR_IMAGE:?}
-    command: ["zuul-executor", "-f"]
+    # Each build's work folder is kept, so that run.sh can print what a failed build's playbooks said: the test bed has
+    # no log storage.
+    command: ["zuul-executor", "-f", "--keep-jobdir"]
     # Bubblewrap, as on ThunderBox (deploy/zuul/README.md, "The executor").
     privileged: true
     environment:

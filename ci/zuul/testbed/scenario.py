@@ -145,7 +145,8 @@ class Testbed:
         return result.stdout.strip()
 
     def commit(self, files, message):
-        """Writes the files (None deletes one; a .sh executable) on top of origin/main, commits them, and returns the commit."""
+        """Writes the files (None deletes one; a .sh is executable) on top of origin/main, commits them, and returns the
+        commit."""
         self.git("fetch", "--quiet", "origin", "main")
         self.git("checkout", "--quiet", "--detach", "origin/main")
         for path, content in files.items():

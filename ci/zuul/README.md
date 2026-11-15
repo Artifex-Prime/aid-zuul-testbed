@@ -18,6 +18,9 @@ once Zuul has its GitHub connection (#1344) and build nodes (#1345) ([On Thunder
 | [`playbooks/`](playbooks) | the library's playbooks and their roles | runs on the pull request itself |
 | [`testbed/`](testbed) | Zuul on both, in Docker Compose, with checks | |
 | [`gate.md`](gate.md) | how `check`, `gate` and `hold` do what CI's two layers and Mergify do today, row by row | |
+| [`comparison.md`](comparison.md) | ordinary-run comparison with Actions/Mergify, reporting times and remaining coverage/rollout gaps (#1353) | |
+| [`publish.md`](publish.md) | `post` and `periodic`: the app images, AID's release, the release index and the nightly on Zuul, which CI publishes (`ci/publisher`), and turning it on (#1350) | |
+| [`publish/`](publish) | the scripts those jobs run: aid-zuul-config's publishing jobs, and the nightly | runs on the pull request's own jobs only where one names it (`aid-nightly`); aid-zuul-config's jobs run `main`'s |
 
 ## Trusted and untrusted
 
@@ -56,8 +59,10 @@ the steps (#1341):
   `scripts/`. The role refuses any other.
 - **AID's jobs** set those variables, and nothing else that runs. `check` runs the cheap ones, the plan job's script
   checks of CI's cheap layer (`aid-seam-lint`, `aid-seam-lint-test`, `aid-apps-lint`, `aid-apps-lint-test`), and
-  `gate` the full one, Bazel's build and test of everything (`aid-bazel-everything`): [gate.md](gate.md). #1353 brings
-  the rest of CI's steps, as jobs of the same two kinds.
+  `gate` the Bazel build and test (`aid-bazel-everything`): [gate.md](gate.md). `periodic` runs the nightly,
+  `aid-nightly`; what publishes from `main` is aid-zuul-config's, since each of those jobs holds a secret
+  ([publish.md](publish.md)). The [comparison](comparison.md)
+  records the remaining cheap and gate coverage gaps, tracked in #1520 and #1521 before #1355.
 
 ## Adding or changing a job
 
@@ -182,7 +187,7 @@ A failed run prints every service's log.
 
 ### The two-agent loop on the test bed
 
-Check 11 needs two accounts: the builder, who opens the pull request, and the reviewer, who approves it. So you are
+Check 13 needs two accounts: the builder, who opens the pull request, and the reviewer, who approves it. So you are
 the builder, with your own `gh`, and the run's token the reviewer. It runs alone, after a sync that keeps gate's
 approval (`TESTBED_LOOP=1`), and `main` of the test bed's copy must dismiss an approval when a commit is pushed, as
 AIDepartment's `main` does from #1355 ([`deploy/zuul/github.md`](../../deploy/zuul/github.md), "Branch protection").
@@ -240,6 +245,13 @@ without the test bed's build node:
 ```
 
 ## Checks
+
+- **[`independence.mjs`](independence.mjs)** rejects AID ingress references in the CI runtime directories and the
+  runbook's embedded webhook forwarder, checks that the private hooks network starts first, and checks the App URL.
+  CI's Node suite exercises introduced dependencies as well as the repository's actual routes
+  (`node --test ci/zuul-independence.test.mjs`). Optional UIs and event consumers are outside the CI path (#1506).
+  The test bed also runs [`testbed/check-mqtt.py`](testbed/check-mqtt.py) in the pinned scheduler image: disconnected,
+  failing and unacknowledged MQTT publications cannot wait for an AID subscriber or fail a build.
 
 - **[`check.mjs`](check.mjs)**, with Node, no packages: the layout's rules. CI's Node tests run it
   ([`../zuul.test.mjs`](../zuul.test.mjs)).

@@ -32,6 +32,7 @@ logs() {
 finish() {
   local status=$?
   [ "$status" -eq 0 ] || logs
+  [ -z "${reports_pid:-}" ] || kill "$reports_pid" 2>/dev/null || true
   "${compose[@]}" down --volumes --timeout 10 > /dev/null 2>&1 || true
   sudo rm -rf "$work"
   exit "$status"
@@ -57,7 +58,7 @@ unpack() { # unpack <Secret> <key> <file>
   jq -er --arg name "$1" --arg key "$2" '.items[] | select(.metadata.name == $name) | .data[$key] | @base64d' \
     "$work/secrets.json" > "$3"
 }
-mkdir -p "$work/zookeeper-tls" "$work/client-tls" "$work/etc" "$work/ssh"
+mkdir -p "$work/zookeeper-tls" "$work/client-tls" "$work/etc" "$work/ssh" "$work/logs"
 unpack zookeeper-tls keystore.pem "$work/zookeeper-tls/keystore.pem"
 unpack zookeeper-tls ca.crt "$work/zookeeper-tls/ca.crt"
 for key in tls.crt tls.key ca.crt; do unpack zuul-zookeeper-client "$key" "$work/client-tls/$key"; done
@@ -75,10 +76,12 @@ for repository in "$TESTBED_REPOSITORY" "$config"; do
   [[ "$repository" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "'$repository' is not owner/name" >&2; exit 2; }
 done
 # The deployment's own connection github is ThunderBox's App (deploy/zuul/github.md), which the test bed does not have:
-# it is left out, and the test bed's, with the run's token, takes its place.
-awk '/^\[connection "github"\]$/ { skip = 1; next } /^\[/ { skip = 0 } !skip' "$root/deploy/zuul/server/config/zuul.conf" \
+# it is left out, and the test bed's, with the run's token, takes its place. So is its statsd: the exporter it names,
+# metrics.zuul.svc.cluster.local, is not here, and Zuul's statsd client stops a service whose host does not resolve.
+awk '/^\[(connection "(github|aid-events)"|statsd)\]$/ { skip = 1; next } /^\[/ { skip = 0 } !skip' "$root/deploy/zuul/server/config/zuul.conf" \
   > "$work/etc/deployment.conf"
-[ "$(grep -c '^\[connection "github"\]$' "$work/etc/deployment.conf")" -eq 0 ] || { echo "the deployment's connection github is still there" >&2; exit 1; }
+[ "$(grep -c '^\[connection "github"\]$\|^\[connection "aid-events"\]$\|^\[statsd\]$' "$work/etc/deployment.conf")" -eq 0 ] \
+  || { echo "the deployment's connection github or aid-events, or its statsd, is still there" >&2; exit 1; }
 cat "$work/etc/deployment.conf" "$here/zuul.conf" > "$work/etc/zuul.conf"
 rm "$work/etc/deployment.conf"
 sed -e "s#@REPOSITORY@#$TESTBED_REPOSITORY#g" -e "s#@CONFIG_REPOSITORY@#$config#g" "$here/main.yaml" > "$work/etc/main.yaml"
@@ -88,6 +91,8 @@ echo "== patch"
 # The test bed's token cannot read branch protection, which Zuul asks for on every pull request: patch.py says why,
 # and changes copies of the two files of Zuul's GitHub driver that do, which compose.yaml mounts into each service.
 scheduler=$(sed -n 's/^ZUUL_SCHEDULER_IMAGE=//p' "$here/testbed.env")
+echo "== MQTT publish does not wait for AID or broker acknowledgment"
+docker run --rm --quiet -i --entrypoint python3 "$scheduler" - < "$here/check-mqtt.py"
 graphql=$(docker run --rm --quiet --entrypoint python3 "$scheduler" -c \
   'import os, zuul.driver.github.graphql as g; print(os.path.dirname(g.__file__))')
 mkdir -p "$work/graphql-original"
@@ -110,6 +115,10 @@ if [ "$secrets" = 1 ]; then
   "${compose[@]}" run --rm --no-deps --quiet-pull -e TESTBED_CONFIG_REPOSITORY="$config" --entrypoint sh scheduler -c \
     'python3 -I /etc/zuul/import-key.py /etc/zuul/testbed-project-key.pem /tmp/keys.json && zuul-admin import-keys /tmp/keys.json'
 fi
+# Subscribe before the scheduler can report: every native lifecycle report is captured for the final check.
+"${compose[@]}" up --detach --quiet-pull --wait events
+"${compose[@]}" exec -T events mosquitto_sub -t aid/zuul/reports -q 1 -i testbed-events > "$work/reports.jsonl" &
+reports_pid=$!
 "${compose[@]}" up --detach --quiet-pull
 "${compose[@]}" ps
 
@@ -137,3 +146,7 @@ if [ -n "${TESTBED_LOOP_PULL:-}" ]; then
 fi
 python3 -I -B "$here/scenario.py" --zuul http://127.0.0.1:9000 --tenant aid --repository "$TESTBED_REPOSITORY" \
   --config-repository "$config" --checkout "$root" "${secret_args[@]}" "${loop[@]}"
+
+if [ "${#loop[@]}" -eq 0 ] && grep -q 'connection "aid-events"' "$root/ci/zuul/testbed/zuul.conf"; then
+  python3 -I -B "$here/reports.py" "$work/reports.jsonl"
+fi

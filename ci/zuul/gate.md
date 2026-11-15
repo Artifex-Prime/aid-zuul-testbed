@@ -14,6 +14,10 @@ branch protection requires `Every package passed`, which only Mergify's queue dr
 request into a dependent pipeline only when GitHub would let it merge (its GitHub driver's `canMerge`: "required status
 checks are missing"). Every row below was seen on the test bed ([Seen working](#seen-working)).
 
+The ordinary production runs and their limits are in [comparison.md](comparison.md) (#1353): no reporting-only gate
+run or production gate timing was observed, and the missing jobs/rollout problems are tracked separately. The test
+bed's pipeline proof does not establish production job parity.
+
 ## From Mergify to Zuul
 
 | Today (Mergify / Actions) | On Zuul | Where |
@@ -202,3 +206,26 @@ external guard of aid-zuul-config#3, `203c5acb`, which check 5 needs), passed al
 | requeue | 9, 10 | a failed pull request enters gate again on `regate`, and merges; a push takes a pull request out of gate, and check passing on the new head brings it back, with no other event |
 | labels, the status comment | 7, 9 | `aid/gate` success and failure on the pull request, and a comment naming the failed job |
 | flakes | 9 | the first fails; the second's build on top of it is `ABORTED` and run again without it, passes and merges |
+
+### The two-agent loop on the test bed
+
+Checks 6 to 10 run with a copy of gate that leaves out its approval: the run's token opens their pull requests, and
+nobody may approve their own ([`testbed/sync.sh`](testbed/sync.sh)). Check 13 runs alone, with the approval kept, on a
+pull request the builder opened as itself, which the run's token reviews ([README.md](README.md), "The two-agent loop
+on the test bed").
+
+Run [43623232006](https://github.com/Artifex-Prime/aid-zuul-testbed/actions/runs/43623232006) on 2026-11-14, of
+AIDepartment's `ci/zuul` at `8b8d0430` and kristofk/aid-zuul-config#7 at `0713a8d0`, took issue
+[Artifex-Prime/aid-zuul-testbed#87](https://github.com/Artifex-Prime/aid-zuul-testbed/issues/87) through the loop.
+Its pull request, #88, was opened by `Artifex-Prime`, the builder, and reviewed by `github-actions[bot]`. GitHub had
+refused the builder's own approval ("Can not approve your own pull request"). With no Mergify:
+
+| Step | Seen |
+|---|---|
+| a draft | check ran on it and passed |
+| a comment review, then ready | stays out: nobody approved it |
+| `regate` | stays out: a comment does not stand in for an approval |
+| approved while held | stays out |
+| the builder's push after the approval | GitHub dismissed the approval; check passed on the new head; without `hold` it stays out, as its one approval was of the old head |
+| the reviewer's approval of the new head | gate ran `aid-bazel-everything`, it passed, and Zuul merged it by rebase: `main` linear, both commits on it |
+| the issue | the merged pull request names #87 as the issue it closes, but GitHub closed no issue for the merge by the workflow's token, so the check closed it (completed). On ThunderBox Zuul merges as its App, not a workflow token; that its merge closes the issue is first seen at #1355 |

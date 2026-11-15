@@ -27,7 +27,8 @@ Then the gate's rows (../gate.md, "From Mergify to Zuul"), each seen on the test
 Then the secrets for jobs (deploy/zuul/job-secrets.md), when sync.sh added the test bed's jobs with a secret:
 
   11. A job with a secret, defined in the config project, gets it in post on main; one whose secret may not go to
-     post is failed by the trusted guard before its run playbook.
+     post is failed by the trusted guard before its run playbook. A job with an OIDC secret gets a token Zuul signed,
+     with the claims ThunderBox's pusher checks (../publish.md, "The pusher").
   12. A pull request cannot have that secret: Zuul refuses it in check, a job inheriting the job, and a job naming the
      secret.
 
@@ -423,8 +424,15 @@ def layout_loads(bed):
     _, jobs = bed.zuul.get("/jobs")
     expect({"base", "aid-bazel", "aid-script", "aid-seam-lint"} <= {job["name"] for job in jobs},
            "the base job and AID's job library are loaded")
+    # The nightly (#1350), once the config project has its periodic pipeline.
+    _, pipelines = bed.zuul.get("/pipelines")
+    if "periodic" in {pipeline["name"] for pipeline in pipelines}:
+        _, project = bed.zuul.get(f"/project/github.com/{bed.args.repository}")
+        periodic = {job[0]["name"] for config in project.get("configs", []) for pipeline in config.get("pipelines", [])
+                    if pipeline["name"] == "periodic" for job in pipeline.get("jobs", [])}
+        expect("aid-nightly" in periodic, f"AID's project runs aid-nightly in periodic ({sorted(periodic)})")
     if bed.args.secret:
-        expect({"testbed-secret-probe", "testbed-secret-guard-probe"} <= {job["name"] for job in jobs},
+        expect({"testbed-secret-probe", "testbed-secret-guard-probe", "testbed-oidc-probe"} <= {job["name"] for job in jobs},
                "the test bed's jobs with a secret are loaded: Zuul decrypted the fixture with the imported key")
         # The key is PEM, not JSON.
         with urllib.request.urlopen(f"{bed.zuul.url}/api/tenant/{bed.zuul.tenant}/key/{bed.args.config_repository}.pub",
@@ -763,7 +771,7 @@ def post_job_gets_secret(bed):
     bed.zuul.send("push", {"ref": "refs/heads/main", "before": before, "after": main["sha"], "commits": [],
                            "repository": repository, "sender": {"login": repository["owner"]["login"]}})
     query = urllib.parse.urlencode({"project": bed.args.repository, "pipeline": "post", "complete": "true"})
-    names = {"testbed-secret-probe", "testbed-secret-guard-probe"}
+    names = {"testbed-secret-probe", "testbed-secret-guard-probe", "testbed-oidc-probe"}
 
     def done():
         _, builds = bed.zuul.get(f"/builds?{query}")
@@ -794,6 +802,38 @@ def post_job_gets_secret(bed):
     expect("has a secret, and runs only on a merged ref" in " ".join(guarded.split()),
            "the guard failed it, not anything else")
     expect("testbed secret sha256" not in guarded, "its run playbook, which uses the secret, never ran")
+    oidc_token_is_the_pushers(bed, builds["testbed-oidc-probe"])
+
+
+# What ThunderBox's pusher checks of a token (../publish.md, "The pusher"): Zuul's signature by a key Zuul publishes, and
+# the claims that make it a publishing job's. In the executor's image, which has Zuul's own PyJWT.
+VERIFY = """
+import json, sys, jwt
+given = json.load(sys.stdin)
+key = jwt.PyJWKSet.from_dict(given["jwks"])[jwt.get_unverified_header(given["token"])["kid"]].key
+print(json.dumps(jwt.decode(given["token"], key, algorithms=["RS256"], audience="thunderbox-registry")))
+"""
+
+
+def oidc_token_is_the_pushers(bed, build):
+    expect(build["result"] == "SUCCESS", "the job with an OIDC secret passed")
+    _, found = bed.zuul.get(f"/build/{build['uuid']}")
+    artifacts = {artifact["name"]: artifact.get("metadata", {}) for artifact in found.get("artifacts", [])}
+    token = artifacts.get("testbed-pusher", {}).get("token", "")
+    expect(token.count(".") == 2, "it returned the token Zuul signed for it")
+    _, configuration = request("GET", f"{bed.zuul.url}/.well-known/openid-configuration")
+    _, jwks = request("GET", configuration["jwks_uri"].replace(configuration["issuer"].rstrip("/"), bed.zuul.url, 1))
+    result = subprocess.run(["docker", "exec", "-i", os.environ["TESTBED_EXECUTOR_ID"], "python3", "-c", VERIFY],
+                            input=json.dumps({"token": token, "jwks": jwks}), capture_output=True, text=True, timeout=60)
+    expect(result.returncode == 0, f"its signature is by a key at Zuul's jwks_uri, its audience the pusher's: {result.stderr[-300:]}")
+    claims = json.loads(result.stdout)
+    log(f"  the token's claims: { {key: claims[key] for key in ('iss', 'sub', 'pipeline', 'job-name', 'tenant', 'aud')} }")
+    expect(claims["iss"] == configuration["issuer"], "its issuer is Zuul's, as its OpenID configuration says")
+    expect(claims["sub"] == f"secret:{bed.zuul.tenant}/github.com/{bed.args.config_repository}/testbed-pusher",
+           "its subject names the tenant, the config project and the secret")
+    expect((claims["pipeline"], claims["job-name"], claims["tenant"]) == ("post", "testbed-oidc-probe", bed.zuul.tenant),
+           "it names the pipeline and the job that got it")
+    expect(claims["exp"] - claims["iat"] == 600, "it lasts the secret's ttl")
 
 
 SECRET_IN_CHECK = """\

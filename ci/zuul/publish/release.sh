@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Zuul's AID release, the job aid-release in post (ci/zuul/publish.md): a merge into main that changes VERSION releases
+# it, as aid-release.yml's plan, release and index jobs do on GitHub Actions, with the same commands. A merge that leaves
+# VERSION alone, or one while ci/publisher names another CI, does nothing (ci/aid-release.mjs plan).
+#
+#   ci/zuul/publish/release.sh build    the plan; the release folder, built clean (#1298); the three images, built
+#                                       and checked; the keychain asset and the entry, written
+#   ci/zuul/publish/release.sh push     the images through the pusher (Zuul's token: CI_PUBLISH_TOKEN_FILE), once the
+#                                       version is still unreleased (the App's token, used first)
+#   ci/zuul/publish/release.sh record   the GitHub Release aid-v<version>, then its entry in the index (the App's token)
+#   ci/zuul/publish/release.sh report   after a failure: the release's issue, as aid-release.yml's report job opens it
+#
+# One playbook each, so that each credential is made just before it is used (ci/zuul/publish/apps.sh says why). What a
+# stage decided and made is kept under $ZUUL_STATE/release/ for the next.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+# shellcheck source=ci/zuul/publish/job-env.sh
+. ci/zuul/publish/job-env.sh
+
+stage=${1:-}
+state=$ZUUL_STATE/release
+released=$state/released
+
+case $stage in
+  build)
+    rm -rf "$state"; mkdir -p "$released"
+    outputs "$state/plan" node ci/aid-release.mjs plan
+    [ "$(output "$state/plan" release)" = true ] || { echo "Nothing to release."; exit 0; }
+    VERSION=$(output "$state/plan" version) COMMIT=$(output "$state/plan" commit)
+    export VERSION COMMIT
+    node ci/aid-release.mjs unreleased
+    trap 'node ci/image-run.mjs cleanup || true' EXIT
+    # Clean: no cache, no farm (deploy/release-folder.sh). Every release carries the keychain asset from it.
+    deploy/release-folder.sh --jobs "${RELEASE_JOBS:-3}"
+    node ci/aid-release.mjs keychain dist/keychain/aid-keychain "$released"
+    for name in aid aid-broker aid-ingress; do
+      outputs "$state/$name" node ci/aid-release.mjs build "$name"
+    done
+    IMAGE_AID=$(output "$state/aid" image) IMAGE_AID_BROKER=$(output "$state/aid-broker" image)
+    IMAGE_AID_INGRESS=$(output "$state/aid-ingress" image)
+    export IMAGE_AID IMAGE_AID_BROKER IMAGE_AID_INGRESS
+    node ci/aid-release.mjs check "$released/checks.txt"
+    # The entry first, pinned to the checked digests, which the pusher must return: no image is published without it.
+    node ci/aid-release.mjs entry "$released/checks.txt" "$released/aid-release.json"
+    printf 'aid=%s\naid-broker=%s\naid-ingress=%s\n' "$IMAGE_AID" "$IMAGE_AID_BROKER" "$IMAGE_AID_INGRESS" > "$state/images"
+    echo "Built and checked AID $VERSION from $COMMIT." >> "$GITHUB_STEP_SUMMARY"
+    ;;
+  push)
+    : "${CI_PUBLISH_TOKEN_FILE:?push needs the pusher token}" "${CI_GITHUB_TOKEN_FILE:?push needs the App token, to ask once more}"
+    [ -f "$state/images" ] || { echo "Nothing to release."; exit 0; }
+    # Asked again right before the pusher, as aid-release.yml does: a version released once is never pushed again.
+    node ci/aid-release.mjs unreleased
+    export CI_PUBLISH_TIMEOUT_SECONDS=${CI_PUBLISH_TIMEOUT_SECONDS:-3600}
+    rm -f "$state/digests"
+    for name in aid aid-broker aid-ingress; do
+      outputs "$state/published-$name" env IMAGE="$(output "$state/images" "$name")" REPOSITORY="aid/$name" node ci/publish-image.mjs
+      echo "$name=$(output "$state/published-$name" digest)" >> "$state/digests"
+    done
+    echo "Published aid, aid-broker and aid-ingress $(output "$state/plan" version) by their checked digests." >> "$GITHUB_STEP_SUMMARY"
+    ;;
+  record)
+    : "${CI_GITHUB_TOKEN_FILE:?record needs the App token}"
+    [ -f "$state/digests" ] || { echo "Nothing to release."; exit 0; }
+    # Asked again right before the release: a version released once is never released again.
+    node ci/aid-release.mjs unreleased
+    node ci/zuul/publish/github.mjs release "$released"
+    # Not optional: AID's updates find releases in the index (contracts/application.md).
+    node ci/aid-index.mjs record "$released/aid-release.json" \
+      "$(output "$state/digests" aid)" "$(output "$state/digests" aid-broker)" "$(output "$state/digests" aid-ingress)"
+    ;;
+  report)
+    # Only for a release: a merge that releases nothing has no plan that said release=true.
+    [ "$(output "$state/plan" release 2>/dev/null)" = true ] || { echo "No release was attempted: nothing to report."; exit 0; }
+    node ci/zuul/publish/github.mjs report "$(output "$state/plan" version)"
+    ;;
+  *) echo "usage: ci/zuul/publish/release.sh build|push|record|report" >&2; exit 2 ;;
+esac

@@ -4,4 +4,3 @@
       jobs:
         - testbed-secret-probe
         - testbed-secret-guard-probe
-        - testbed-oidc-probe

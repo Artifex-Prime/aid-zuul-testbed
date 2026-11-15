@@ -19,8 +19,6 @@ once Zuul has its GitHub connection (#1344) and build nodes (#1345) ([On Thunder
 | [`testbed/`](testbed) | Zuul on both, in Docker Compose, with checks | |
 | [`gate.md`](gate.md) | how `check`, `gate` and `hold` do what CI's two layers and Mergify do today, row by row | |
 | [`comparison.md`](comparison.md) | ordinary-run comparison with Actions/Mergify, reporting times and remaining coverage/rollout gaps (#1353) | |
-| [`publish.md`](publish.md) | `post` and `periodic`: the app images, AID's release, the release index and the nightly on Zuul, which CI publishes (`ci/publisher`), and turning it on (#1350) | |
-| [`publish/`](publish) | the scripts those jobs run: aid-zuul-config's publishing jobs, and the nightly | runs on the pull request's own jobs only where one names it (`aid-nightly`); aid-zuul-config's jobs run `main`'s |
 
 ## Trusted and untrusted
 
@@ -59,9 +57,7 @@ the steps (#1341):
   `scripts/`. The role refuses any other.
 - **AID's jobs** set those variables, and nothing else that runs. `check` runs the cheap ones, the plan job's script
   checks of CI's cheap layer (`aid-seam-lint`, `aid-seam-lint-test`, `aid-apps-lint`, `aid-apps-lint-test`), and
-  `gate` the Bazel build and test (`aid-bazel-everything`): [gate.md](gate.md). `periodic` runs the nightly,
-  `aid-nightly`; what publishes from `main` is aid-zuul-config's, since each of those jobs holds a secret
-  ([publish.md](publish.md)). The [comparison](comparison.md)
+  `gate` the Bazel build and test (`aid-bazel-everything`): [gate.md](gate.md). The [comparison](comparison.md)
   records the remaining cheap and gate coverage gaps, tracked in #1520 and #1521 before #1355.
 
 ## Adding or changing a job

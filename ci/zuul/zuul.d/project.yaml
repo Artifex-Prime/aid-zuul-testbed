@@ -26,11 +26,6 @@
     gate:
       jobs:
         - aid-bazel-everything
-    # The nightly (#1350): aid-zuul-config's periodic pipeline, at 02:00 and 03:00 UTC; the job's clock runs it at 04:00 in
-    # Madrid. Publishing (post) is aid-zuul-config's alone: every job there holds a secret (ci/zuul/publish.md).
-    periodic:
-      jobs:
-        - aid-nightly
     # Takes a pull request out of gate (kristofk/aid-zuul-config). Nothing runs.
     hold:
       jobs:

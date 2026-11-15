@@ -130,7 +130,6 @@ if [ -f "$config_dest/playbooks/secrets/guard.yaml" ]; then
   } > "$config_dest/testbed/secret-probe.yaml"
   mkdir -p "$config_dest/playbooks/testbed"
   cp "$here/secret-probe-run.yaml" "$config_dest/playbooks/testbed/secret-probe.yaml"
-  cp "$here/oidc-probe-run.yaml" "$config_dest/playbooks/testbed/oidc-probe.yaml"
   cat > "$dest/ci/zuul/zuul.d/testbed-post.yaml" <<'POST'
 # Added by sync.sh: the test bed's jobs with a secret, in the post pipeline (testbed/secret-probe.yaml).
 - project:
@@ -138,7 +137,6 @@ if [ -f "$config_dest/playbooks/secrets/guard.yaml" ]; then
       jobs:
         - testbed-secret-probe
         - testbed-secret-guard-probe
-        - testbed-oidc-probe
 POST
 else
   echo "the aid-zuul-config checkout has no playbooks/secrets/guard.yaml: the test bed's secret checks are left out" >&2

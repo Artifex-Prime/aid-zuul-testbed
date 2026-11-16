@@ -50,9 +50,8 @@ done < <(grep -rlE '^- secret:|^ +secrets:' "$config_dest/zuul.d" || true)
 # error in its summary; a status cannot, so each failure reporter comments too, as main's did before check runs, and
 # the scenario's negative cases read the error from that comment. gate's requirement and trigger on check's check run
 # become the same on check's status, which GitHub shows as made by github-actions[bot] (its REST API) or
-# github-actions (its GraphQL API, which Zuul reads the requirement from). A status has no cancelled or skipped, so
-# dequeue and no-jobs leave it as it was (#1660). aid-zuul-config's own files keep check runs and the permission
-# (AIDepartment's deploy/zuul/github.md); every change must apply, or the copy stops.
+# github-actions (its GraphQL API, which Zuul reads the requirement from). aid-zuul-config's own files keep check runs
+# and the permission (AIDepartment's deploy/zuul/github.md); every change must apply, or the copy stops.
 pipelines="$config_dest/zuul.d/pipelines.yaml"
 # Keep the original before removing permissions for the workflow token. run.sh
 # checks its schema and gate's review filters with the pinned scheduler's driver.
@@ -67,7 +66,7 @@ TESTBED_CHECK_STATUS="'github-actions(\\[bot\\])?:aid/check:success'" awk '
   /^ +check: (in_progress|queued)$/ { sub(/check: .*/, "status: pending"); print; next }
   /^ +check: success$/ { sub(/check: success/, "status: success"); print; next }
   /^ +check: failure$/ { sub(/check: failure/, "status: failure"); print; failed = 1; next }
-  /^ +check: (cancelled|skipped)$/ || /^ +permission: write$/ { next }
+  /^ +check: cancelled$/ || /^ +permission: write$/ { next }
   failed && /^ +comment: false$/ { sub(/false/, "true") }
   /^ +comment: / { failed = 0 }
   { print }

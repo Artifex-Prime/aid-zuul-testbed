@@ -44,8 +44,7 @@ How the build-and-review loop (`docs/review-loop.md`) runs on Zuul.
   `aid/gate`: queued, then in progress, then success and the merge, or failure with a comment that names the failed
   job and links its log. About 10 minutes after the pull request is ready, approved and `aid/check` passed on its
   head, `aid/gate` is there. If it is not (GitHub's event came late or not at all), comment `regate`, once. If that
-  starts nothing either, tell the orchestrator. An approved pull request of kristofk/aid-zuul-config enters gate too,
-  which has no jobs for it: `aid/gate` goes from queued to skipped, and the orchestrator merges it (#1660).
+  starts nothing either, tell the orchestrator.
 - **What wakes the bots.** The loop's automations ([`docs/review-loop.md`](../../docs/review-loop.md), "How AID routes
   the events") react to GitHub's review requests, submitted reviews and closed pull requests, never to a queue's
   events, so no queue-specific event is needed. The approval reaches the builder as every review does

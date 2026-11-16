@@ -279,16 +279,10 @@
         check: failure
         comment: true
 
-    # A pull request of a project with no gate jobs, this repository's own (zuul.d/project.yaml): gate takes in any
-    # approved one, reports aid/gate queued before it knows the jobs, and then has nothing to run or merge. skipped
-    # completes aid/gate, which GitHub counts as passed; the orchestrator merges it as before (AIDepartment#1660).
     no-jobs:
       aid-events:
         topic: aid/zuul/reports
         qos: 1
-      github:
-        check: skipped
-        comment: false
 
     disabled:
       aid-events:

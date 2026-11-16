@@ -4,7 +4,8 @@
 # Actions (.github/workflows/app-<app>.yml), with the same commands, and its declaration goes into the release index.
 #
 #   ci/zuul/publish/apps.sh build    which apps publish; each one's image built and checked, its declaration written
-#   ci/zuul/publish/apps.sh push     each built image through the pusher (Zuul's token: CI_PUBLISH_TOKEN_FILE)
+#   ci/zuul/publish/apps.sh push     each built image through the pusher (Zuul's token: CI_PUBLISH_TOKEN_FILE); an
+#                                    app that fails here fails the job in record, once the others are indexed
 #   ci/zuul/publish/apps.sh record   each pushed image's declaration into the index (the App's: CI_GITHUB_TOKEN_FILE)
 #
 # One playbook each, so that each credential is made just before it is used, and only where: Zuul signs the pusher's
@@ -65,9 +66,12 @@ case $stage in
         rm -f "$dir/published"; failed+=("$APP")
       fi
     done < "$apps/list"
+    # Zuul runs the next playbook only after this one passed. So an app that failed here does not fail this stage: it
+    # is written down, record indexes every app that did publish, and then fails the job for this one.
+    rm -f "$apps/push-failed"
     if [ ${#failed[@]} -gt 0 ]; then
-      echo "Not published: ${failed[*]}. The others are recorded next (ci/zuul/publish.md, \"Running a publishing job again\")." >&2
-      exit 1
+      printf '%s\n' "${failed[@]}" > "$apps/push-failed"
+      echo "Not published: ${failed[*]}. The others are recorded next, and the job then fails (ci/zuul/publish.md, \"Running a publishing job again\")." >&2
     fi
     ;;
   record)
@@ -84,8 +88,11 @@ case $stage in
     done < "$apps/list"
     if [ ${#failed[@]} -gt 0 ]; then
       echo "Published and not recorded: ${failed[*]} (ci/zuul/publish.md, \"Running a publishing job again\")." >&2
-      exit 1
     fi
+    if [ -f "$apps/push-failed" ]; then
+      echo "Not published, in push: $(tr '\n' ' ' < "$apps/push-failed")(ci/zuul/publish.md, \"Running a publishing job again\")." >&2
+    fi
+    [ ${#failed[@]} -eq 0 ] && [ ! -f "$apps/push-failed" ]
     ;;
   *) echo "usage: ci/zuul/publish/apps.sh build|push|record" >&2; exit 2 ;;
 esac

@@ -17,7 +17,8 @@ export function client(env = process.env, read = readFileSync) {
   if (!env.CI_GITHUB_TOKEN_FILE) throw new Error("CI_GITHUB_TOKEN_FILE is required");
   const token = read(env.CI_GITHUB_TOKEN_FILE, "utf8").trim();
   if (!token) throw new Error("the token file is empty");
-  return github({ token });
+  // AID_GITHUB_API only for ci/zuul-publish.test.mjs, which answers as GitHub does.
+  return github({ token, ...(env.AID_GITHUB_API ? { apiUrl: env.AID_GITHUB_API, uploadUrl: env.AID_GITHUB_API } : {}) });
 }
 
 export async function main(args, env = process.env, api = () => client(env)) {

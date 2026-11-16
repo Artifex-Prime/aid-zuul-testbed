@@ -25,6 +25,8 @@ case $stage in
   build)
     rm -rf "$state"; mkdir -p "$released"
     outputs "$state/plan" node ci/aid-release.mjs plan
+    # A plan that ran to its end, so report knows a failure after it from a refusal by it (which writes no plan).
+    touch "$state/planned"
     [ "$(output "$state/plan" release)" = true ] || { echo "Nothing to release."; exit 0; }
     VERSION=$(output "$state/plan" version) COMMIT=$(output "$state/plan" commit)
     export VERSION COMMIT
@@ -50,6 +52,11 @@ case $stage in
     [ -f "$state/images" ] || { echo "Nothing to release."; exit 0; }
     # Asked again right before the pusher, as aid-release.yml does: a version released once is never pushed again.
     node ci/aid-release.mjs unreleased
+    # The tag the pusher gives each image: the version the plan released, from build's state (each stage is a process
+    # of its own).
+    VERSION=$(output "$state/plan" version)
+    [ -n "$VERSION" ] || { echo "push: build's plan names no version" >&2; exit 1; }
+    export VERSION
     export CI_PUBLISH_TIMEOUT_SECONDS=${CI_PUBLISH_TIMEOUT_SECONDS:-3600}
     rm -f "$state/digests"
     for name in aid aid-broker aid-ingress; do
@@ -69,9 +76,18 @@ case $stage in
       "$(output "$state/digests" aid)" "$(output "$state/digests" aid-broker)" "$(output "$state/digests" aid-ingress)"
     ;;
   report)
-    # Only for a release: a merge that releases nothing has no plan that said release=true.
-    [ "$(output "$state/plan" release 2>/dev/null)" = true ] || { echo "No release was attempted: nothing to report."; exit 0; }
-    node ci/zuul/publish/github.mjs report "$(output "$state/plan" version)"
+    # Every failure of the job opens or comments on the release's issue, as aid-release.yml's report job does for any
+    # failure on main: a refusal by the plan too (a version released already, CHANGELOG.md), which leaves no plan. Not
+    # when the plan ran to its end and released nothing, nor while ci/publisher names another CI.
+    if [ -f "$state/planned" ] && [ "$(output "$state/plan" release)" != true ]; then
+      echo "The plan released nothing: nothing to report."; exit 0
+    fi
+    # A build that failed before its plan may have left no state folder.
+    mkdir -p "$state"
+    outputs "$state/publisher" node ci/publisher.mjs
+    [ "$(output "$state/publisher" publisher)" = true ] || { echo "ci/publisher names another CI: it reports."; exit 0; }
+    version=$(output "$state/plan" version 2>/dev/null || true)
+    node ci/zuul/publish/github.mjs report "${version:-$(tr -d '[:space:]' < VERSION)}"
     ;;
   *) echo "usage: ci/zuul/publish/release.sh build|push|record|report" >&2; exit 2 ;;
 esac

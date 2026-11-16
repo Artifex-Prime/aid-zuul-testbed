@@ -5,8 +5,9 @@
 # step runs the same command on both CIs (#1341's rule).
 #
 # From the playbook (aid-zuul-config's playbooks/publish/): ZUUL_PIPELINE, ZUUL_OLDREV, ZUUL_NEWREV, ZUUL_BUILD,
-# ZUUL_BUILD_URL, ZUUL_STATE (a folder that outlives the job's playbooks), and ThunderBox's endpoints as the image
-# runners have them: BUILDKIT_HOST, CI_SCRATCH_REGISTRY, CI_RUN_NAMESPACE, CI_PUBLISH_URL, CI_PUBLISH_AUDIENCE. Each
+# ZUUL_BUILD_URL, ZUUL_STATE (a folder that outlives the job's playbooks), the post node's own BuildKit as BUILDKIT_HOST
+# (deploy/zuul/post-buildkit/), and ThunderBox's endpoints as the image runners have them: CI_SCRATCH_REGISTRY,
+# CI_RUN_NAMESPACE, CI_PUBLISH_URL, CI_PUBLISH_AUDIENCE. Each
 # stage gets only the credential it uses, made as its playbook starts: CI_GITHUB_TOKEN_FILE, the App aid-release's token
 # (an hour), in the stages that read or write GitHub (the release's push too, which asks GitHub once before it pushes);
 # CI_PUBLISH_TOKEN_FILE, Zuul's token for the pusher (three hours), in the stage that pushes and in no other.
@@ -36,6 +37,11 @@ export GITHUB_EVENT_PATH=$ZUUL_STATE/event.json
 export GITHUB_STEP_SUMMARY=$HOME/zuul-output/logs/summary.md
 # Node's fetch through the node's proxy (#208).
 export NODE_USE_ENV_PROXY=1
+# The cluster's API, for the image check's kubectl (ci/image-run.mjs) with the post node's mounted ServiceAccount. The
+# pod has these, but sshd gives a job's session only its one SetEnv line (deploy/zuul/node/image/sshd_config), so
+# kubectl found no in-cluster config and tried localhost:8080 (#1622). By name, not the pod's IP: NO_PROXY's .svc lets
+# the name past the node's proxy, which refuses the IP.
+export KUBERNETES_SERVICE_HOST=kubernetes.default.svc KUBERNETES_SERVICE_PORT=443
 # Commits to the index branch are the App's.
 export CI_COMMIT_NAME="aid-release[bot]" CI_COMMIT_EMAIL="aid-release[bot]@users.noreply.github.com"
 

@@ -136,20 +136,50 @@ build node reaches it (#1345's node, `deploy/zuul/node/`):
 - **the cluster's address**, `frontend.build-farm.svc:8980`, as CI's runner pods reach it. The node's own system
   bazelrc names its credential helper for that host. `--config=remote` alone would not do: the checkout's `.bazelrc`
   is read after the node's system one, and its `remote` names the boxes' address, `build-farm:8980`;
-- **the hermetic toolchain** (`--config=hermetic`): a node has no Swift and no C compiler, and without a `swiftc` on
-  PATH rules_swift makes no toolchain at all (`swift_autoconfiguration`). swift.org's toolchain, downloaded on the
-  node, runs on the farm's workers;
-- **no local fallback**: an action the farm can't run fails, rather than run on a node that can't build it.
+- **the workers' installed toolchains** (`build/farm/toolchain/`): checked-in Swift and C++ declarations name
+  `/usr/bin` in the worker image, without discovering a local compiler or downloading Swift on the node. Their
+  execution constraint requires `//build/platforms:farm`; its properties select Ubuntu 26.04 and the pinned Swift
+  release. The Swift pin is an action input and a test holds the declared version to it;
+- **portable dependency metadata** (`third_party/swift/metadata/`): rules_swift_package_manager reads the root and
+  pinned dependencies' manifest JSON without invoking SwiftPM on the node. A small patch skips its version probe on
+  complete cache hits and rejects stale metadata inputs. `node ci/swift-metadata.mjs` regenerates the snapshots on the
+  pinned compiler (docs/development.md, "Dependency versions"). Bazel still fetches and builds the pinned sources;
+- **remote execution only** (`--spawn_strategy=remote`, no local fallback): build tools, compilation, links and tests
+  all run on the farm. An action the farm can't run fails, rather than run on a node that can't build it.
 
 Under `dev`, remote's instance: #1345's node is the pull requests', and the gate's `main` (#1298) comes with its own
 nodes and credential (#1351).
 
-**Not working yet (#1485).** The node is not deployed, so the job has not run there. From a box, with a fresh output
-base and no `swift`, `clang`, `gcc` or `cc` on the repository rules' PATH, `--config=ci --config=zuul` (the boxes'
-farm address in place of the cluster's) got through analysis and ran 47 actions on the farm. After 38 minutes Bazel's
-circuit breaker stopped it ("Call not executed due to a high failure rate"). The farm does build Swift with its
-workers' own toolchain, but that toolchain is found through a local `swiftc`. #1485 gives the job a toolchain that
-works from the node.
+**Passed on the production build node, 2026-11-15 (#1485).** The existing `aid-bazel-everything` job ran in `check`
+through temporary draft [probe #1549](https://github.com/kristofk/AIDepartment/pull/1549), head
+`9c8eafe81d3be384e1c654cdd819a511700ee2ff`. Its toolchains, dependency metadata, job, playbook, role and build/test
+sources are the implementation at `d43552ad` in #1547; only the project stanza selects the full job in `check` for the
+probe. Zuul rebased it onto main `d5e767520e8e9f8a30b63ff3782ba2c2a18c47b7`, as the retained
+[workspace state](http://zuul-logs:8080/logs/2026-11-15/a52d31e7a74846b386930c3495c54115/workspace-repos.json) records.
+
+[Build a52d31e7a74846b386930c3495c54115](http://web.zuul.svc.cluster.local:9000/t/aid/build/a52d31e7a74846b386930c3495c54115)
+was **SUCCESS**, from 16:38:45 to 17:04:16 UTC (25 min 31 s). The actual Ansible command was
+`bazel test --config=ci --config=zuul -- //...`, exit 0. Bazel invocation
+`eab4417d-29fb-4579-a19e-5f5004960f66` took 1519.002 s; the retained
+[job log](http://zuul-logs:8080/logs/2026-11-15/a52d31e7a74846b386930c3495c54115/job-output.txt) ends:
+
+```text
+INFO: 1822 processes: 3 action cache hit, 148 remote cache hit, 336 internal, 1339 remote.
+INFO: Build completed successfully, 1822 total actions
+Executed 21 out of 30 tests: 30 tests pass.
+```
+
+The node was inspected as UID 10001 before the probe: no `swift`, `swiftc`, `clang`, `clang++`, `gcc`, `g++`, `cc` or
+`c++` on PATH. It used the existing node image digest
+`939004010ecc97e74cd67dd19936ede68e3553c02a1a0c0ae2af99b0b62ea9be`, 2 CPU / 2 GiB memory / 6 GiB ephemeral-storage
+limits and the wrapper's 768 MiB heap. No image, credential, live service or resource limit was changed for this run.
+The farm executed the build actions; nine test results came from its cache and 21 test targets ran.
+
+The first probe (`02f089e3`, build `796cfb6c6bde4301ab5260ddcaa4b8aa`) failed before compilation because the dependency
+repository rules invoked `swift package --version` on the node. The metadata cache above fixed that remaining local
+Swift dependency. This replaces the earlier hermetic-toolchain box reproduction, which ended at the farm's circuit
+breaker after a large toolchain download. The probe remains a draft and is closed after recording this evidence;
+production `check` keeps its cheap jobs and gate merging is still #1355's switch.
 
 ## Speculative depth
 

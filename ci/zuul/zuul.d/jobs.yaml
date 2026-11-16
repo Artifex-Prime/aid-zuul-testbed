@@ -72,11 +72,11 @@
     vars:
       bazel_command: test
       # On the build farm, from a node with no compiler (#1345): .bazelrc's `zuul`, the farm by the cluster's address,
-      # the hermetic toolchain and no local fallback, under `dev`; the gate's `main` comes with its own nodes (#1351).
+      # the workers' installed toolchains and no local fallback, under `dev`; main gets its own nodes (#1351).
       bazel_flags: [--config=ci, --config=zuul]
       bazel_targets: ["//..."]
 
-# The nightly full run (#1350, ci/zuul/publish.md, "The nightly"), in periodic: Bazel's build and test of everything,
+# The nightly full run (#1350, ci/zuul/publish.md, "The nightly"), in periodic-0200 and periodic-0300: Bazel's build and test of everything,
 # with no cached test result, once a night at 04:00 in Madrid, when ci/publisher names Zuul. Its result reaches the
 # ci-nightly issue through aid-zuul-config's aid-nightly-report, which has the token this job never gets.
 - job:
@@ -84,7 +84,7 @@
     parent: aid-script
     description: |
       Everything with a BUILD file, built and tested on main's head, as the nightly does on GitHub Actions, with the
-      clock of ci/nightly.mjs: at the periodic pipeline's two times only the one at 04:00 in Madrid runs.
+      clock of ci/nightly.mjs: of the two periodic pipelines, only the one whose time is 04:00 in Madrid runs it.
     vars:
       script: ci/zuul/publish/nightly.sh
       script_args: ["{{ zuul.pipeline }}", "{{ zuul.branch }}"]

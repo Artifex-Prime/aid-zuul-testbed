@@ -424,13 +424,15 @@ def layout_loads(bed):
     _, jobs = bed.zuul.get("/jobs")
     expect({"base", "aid-bazel", "aid-script", "aid-seam-lint"} <= {job["name"] for job in jobs},
            "the base job and AID's job library are loaded")
-    # The nightly (#1350), once the config project has its periodic pipeline.
+    # The nightly (#1350), once the config project has its periodic pipelines, one per time.
     _, pipelines = bed.zuul.get("/pipelines")
-    if "periodic" in {pipeline["name"] for pipeline in pipelines}:
+    for name in ("periodic-0200", "periodic-0300"):
+        if name not in {pipeline["name"] for pipeline in pipelines}:
+            continue
         _, project = bed.zuul.get(f"/project/github.com/{bed.args.repository}")
         periodic = {job[0]["name"] for config in project.get("configs", []) for pipeline in config.get("pipelines", [])
-                    if pipeline["name"] == "periodic" for job in pipeline.get("jobs", [])}
-        expect("aid-nightly" in periodic, f"AID's project runs aid-nightly in periodic ({sorted(periodic)})")
+                    if pipeline["name"] == name for job in pipeline.get("jobs", [])}
+        expect("aid-nightly" in periodic, f"AID's project runs aid-nightly in {name} ({sorted(periodic)})")
     if bed.args.secret:
         expect({"testbed-secret-probe", "testbed-secret-guard-probe", "testbed-oidc-probe"} <= {job["name"] for job in jobs},
                "the test bed's jobs with a secret are loaded: Zuul decrypted the fixture with the imported key")
@@ -790,7 +792,6 @@ def post_job_gets_secret(bed):
 
     probe = output("testbed-secret-probe")
     digest = hashlib.sha256(bed.args.secret.encode()).hexdigest()
-    # Throwaway run (AIDepartment#1550): #1540's base post-run fails every build after its run playbook.
     expect(builds["testbed-secret-probe"]["result"] in ("SUCCESS", "POST_FAILURE"), "the job that may have its secret passed its run (POST_FAILURE: #1540)")
     expect(f"testbed secret sha256 {digest}" in probe, "the value that reached it is the fixture's, by its SHA-256")
     _, found = bed.zuul.get(f"/build/{builds['testbed-secret-probe']['uuid']}")
@@ -829,7 +830,9 @@ def oidc_token_is_the_pushers(bed, build):
     expect(result.returncode == 0, f"its signature is by a key at Zuul's jwks_uri, its audience the pusher's: {result.stderr[-300:]}")
     claims = json.loads(result.stdout)
     log(f"  the token's claims: { {key: claims[key] for key in ('iss', 'sub', 'pipeline', 'job-name', 'tenant', 'aud')} }")
-    expect(claims["iss"] == configuration["issuer"], "its issuer is Zuul's, as its OpenID configuration says")
+    # The secret's own issuer (#1637), which the tenant allows, not Zuul's [web] root: the keys are the same.
+    expect(claims["iss"] == "http://web:9000" != configuration["issuer"],
+           "its issuer is the secret's, zuul-web by its service name, not [web] root")
     expect(claims["sub"] == f"secret:{bed.zuul.tenant}/github.com/{bed.args.config_repository}/testbed-pusher",
            "its subject names the tenant, the config project and the secret")
     expect((claims["pipeline"], claims["job-name"], claims["tenant"]) == ("post", "testbed-oidc-probe", bed.zuul.tenant),
@@ -974,7 +977,7 @@ def main():
     if args.loop_pull:
         checks = [layout_loads, lambda bed: two_agent_loop(bed, args.loop_pull)]
     else:
-        # A throwaway run for AIDepartment#1550 (not its file of record): checks 1 and 11 only, while #1540 breaks check 2.
+        # A throwaway run for AIDepartment#1637 (not its file of record): checks 1 and 11 only, while #1540 breaks check 2.
         checks = [layout_loads]
         if args.secret:
             checks += [post_job_gets_secret]

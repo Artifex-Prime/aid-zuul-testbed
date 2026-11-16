@@ -19,7 +19,7 @@ once Zuul has its GitHub connection (#1344) and build nodes (#1345) ([On Thunder
 | [`testbed/`](testbed) | Zuul on both, in Docker Compose, with checks | |
 | [`gate.md`](gate.md) | how `check`, `gate` and `hold` do what CI's two layers and Mergify do today, row by row | |
 | [`comparison.md`](comparison.md) | ordinary-run comparison with Actions/Mergify, reporting times and remaining coverage/rollout gaps (#1353) | |
-| [`publish.md`](publish.md) | `post` and `periodic`: the app images, AID's release, the release index and the nightly on Zuul, which CI publishes (`ci/publisher`), and turning it on (#1350) | |
+| [`publish.md`](publish.md) | `post` and the periodic pipelines: the app images, AID's release, the release index and the nightly on Zuul, which CI publishes (`ci/publisher`), and turning it on (#1350) | |
 | [`publish/`](publish) | the scripts those jobs run: aid-zuul-config's publishing jobs, and the nightly | runs on the pull request's own jobs only where one names it (`aid-nightly`); aid-zuul-config's jobs run `main`'s |
 
 ## Trusted and untrusted
@@ -59,7 +59,7 @@ the steps (#1341):
   `scripts/`. The role refuses any other.
 - **AID's jobs** set those variables, and nothing else that runs. `check` runs the cheap ones, the plan job's script
   checks of CI's cheap layer (`aid-seam-lint`, `aid-seam-lint-test`, `aid-apps-lint`, `aid-apps-lint-test`), and
-  `gate` the Bazel build and test (`aid-bazel-everything`): [gate.md](gate.md). `periodic` runs the nightly,
+  `gate` the Bazel build and test (`aid-bazel-everything`): [gate.md](gate.md). `periodic-0200` and `periodic-0300` run the nightly,
   `aid-nightly`; what publishes from `main` is aid-zuul-config's, since each of those jobs holds a secret
   ([publish.md](publish.md)). The [comparison](comparison.md)
   records the remaining cheap and gate coverage gaps, tracked in #1520 and #1521 before #1355.
@@ -90,13 +90,25 @@ request, reviewed by the other bot and merged by the orchestrator.
 1. Run the test bed with the branch ([The test bed](#the-test-bed)): it loads it as the config project, as ThunderBox
    would after the merge, and runs every check.
 2. Open the pull request there, with the test bed's run linked. Zuul's `check` on it reports a configuration error, if
-   any, before the merge.
+   any, before the merge. It must pass before a merge, and `main` there is to require it (#1526, `deploy/zuul/protect-config.sh`, pending): it is
+   the running scheduler's own load, which also knows the connections ThunderBox has deployed. The test bed has its
+   own `zuul.conf`, so a reporter on a connection that is only in this repository passes there and fails here.
 3. After the merge, Zuul loads it from `main`. `curl <zuul-web>/api/tenant/aid/config-errors` is empty if it loaded.
 
 A change that needs both repositories (a new pipeline and the jobs in it) is two pull requests. Merge the config
 project's first: until it is merged, AID's jobs cannot name the new pipeline.
 
 ## The test bed
+
+Before starting Compose, [`testbed/check-github-gate.py`](testbed/check-github-gate.py) runs in the pinned scheduler
+image against the config checkout's **original** pipelines, saved by `sync.sh` before its workflow-token adaptations.
+It uses Zuul's GitHub parser to reject schema warnings and its actual event/review filters to check every gate entry
+route: a ready, current pull request with a successful check stays out with no approval, a read-only approval or a
+comment review; write/admin approvals let it in. Write/admin requests for changes block it; read-only ones do not.
+The permission check belongs on `require.github.review` / `reject.github.review`; Zuul 14.3.0's
+[`pull_request_review` trigger schema](https://opendev.org/zuul/zuul/src/tag/14.3.0/zuul/driver/github/githubtrigger.py)
+does not accept `permission` (#1535). This probe makes no API calls: its reviews are normalized driver records, so
+it checks the permission filter separately from GitHub's permission lookup and the live scenarios below.
 
 [`testbed/`](testbed) runs Zuul, with ThunderBox's images, ZooKeeper configuration and `zuul.conf`, on both halves, in
 Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull requests

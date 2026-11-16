@@ -53,6 +53,9 @@ done < <(grep -rlE '^- secret:|^ +secrets:' "$config_dest/zuul.d" || true)
 # github-actions (its GraphQL API, which Zuul reads the requirement from). aid-zuul-config's own files keep check runs
 # and the permission (AIDepartment's deploy/zuul/github.md); every change must apply, or the copy stops.
 pipelines="$config_dest/zuul.d/pipelines.yaml"
+# Keep the original before removing permissions for the workflow token. run.sh
+# checks its schema and gate's review filters with the pinned scheduler's driver.
+cp "$pipelines" "$pipelines.original"
 on_check=$(grep -c 'aid-zuul:aid/check:success$' "$pipelines" || true)
 TESTBED_CHECK_STATUS="'github-actions(\\[bot\\])?:aid/check:success'" awk '
   BEGIN { status = ENVIRON["TESTBED_CHECK_STATUS"] }
@@ -98,6 +101,7 @@ else
 fi
 mkdir -p "$dest/ci" "$dest/deploy/zuul/server/config" "$dest/deploy/zuul/executor" "$dest/scripts" "$dest/.github/workflows"
 cp -R "$root/ci/zuul" "$dest/ci/zuul"
+mv "$pipelines.original" "$dest/ci/zuul/testbed/original-pipelines.yaml"
 cp "$root/deploy/zuul/server/config/zuul.conf" "$dest/deploy/zuul/server/config/"
 cp "$root/deploy/zuul/server/zoo.cfg" "$dest/deploy/zuul/server/"
 cp "$root/deploy/zuul/secrets.sh" "$dest/deploy/zuul/"

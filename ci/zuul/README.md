@@ -131,7 +131,11 @@ Docker Compose on a GitHub-hosted runner, and checks it with ordinary pull reque
    (gate.md, "Seen working");
 11. a job with a secret, defined in the config project as `deploy/zuul/job-secrets.md` says, gets it in `post` on
     `main`: its log and its build's artifact show the fixture's SHA-256, never the value. One whose secret may not go
-    to `post` is failed by aid-zuul-config's guard, `playbooks/secrets/guard.yaml`, before its run playbook;
+    to `post` is failed by aid-zuul-config's guard, `playbooks/secrets/guard.yaml`, before its run playbook. A job
+    with an OIDC secret gets a token Zuul signed, with the claims ThunderBox's pusher checks (`sub`, `pipeline`,
+    `job-name`, `aud`, its life) and the issuer its secret names, which the tenant allows, not `[web] root` (#1637).
+    Its signature is checked against the keys at `<iss>/oidc/jwks`, as the pusher fetches them ([publish.md](publish.md),
+    "The pusher");
 12. three pull requests are refused with Zuul's own words: one that lists that job in `check` ("does not allow
     post-review job"), one with a job inheriting it ("is final and can not act as a parent"), and one with a job naming
     its secret ("Secrets must be defined in the same project in which they are used"). The workflow's token opens the

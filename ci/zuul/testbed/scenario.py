@@ -824,7 +824,9 @@ def oidc_token_is_the_pushers(bed, build):
     token = artifacts.get("testbed-pusher", {}).get("token", "")
     expect(token.count(".") == 2, "it returned the token Zuul signed for it")
     _, configuration = request("GET", f"{bed.zuul.url}/.well-known/openid-configuration")
-    _, jwks = request("GET", configuration["jwks_uri"].replace(configuration["issuer"].rstrip("/"), bed.zuul.url, 1))
+    # The keys at <iss>/oidc/jwks, as the pusher fetches them: the token's iss is web by its service name, which is this
+    # zuul-web too, reached from here at bed.zuul.url.
+    _, jwks = request("GET", f"{bed.zuul.url}/oidc/jwks")
     result = subprocess.run(["docker", "exec", "-i", os.environ["TESTBED_EXECUTOR_ID"], "python3", "-c", VERIFY],
                             input=json.dumps({"token": token, "jwks": jwks}), capture_output=True, text=True, timeout=60)
     expect(result.returncode == 0, f"its signature is by a key at Zuul's jwks_uri, its audience the pusher's: {result.stderr[-300:]}")

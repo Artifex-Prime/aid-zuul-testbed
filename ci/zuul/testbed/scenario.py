@@ -12,7 +12,7 @@ GitHub here), and reads the result from Zuul's API and from the commit status Zu
   5. A proposed job can read the fixture farm token in every phase of check, but none of its
      pre/run/post/cleanup hooks execute in check-external: the trusted base rejects it first.
 
-Then the gate's rows (../gate.md, "From Mergify to Zuul"), each seen on the test bed's copies:
+Then the gate's rows (../gate.md, "Zuul's check and gate"), each seen on the test bed's copies:
 
   6. A job runs no longer than its timeout.
   7. Ready means queued: a draft whose check passed stays out of gate; once ready, it enters, gate runs the full jobs
@@ -597,9 +597,17 @@ def external_job_cannot_read_farm(bed):
     expect(bed.commit_status(pull, pipeline="check-external") == "failure", "the external failure is reported")
 
 
-# What check and gate run (ci/zuul/zuul.d/project.yaml): the cheap jobs, and the full ones.
-CHEAP = ["aid-seam-lint", "aid-seam-lint-test", "aid-apps-lint", "aid-apps-lint-test"]
+# What check and gate run (ci/zuul/zuul.d/project.yaml): the cheap jobs, and the full ones. Gate's plan names the jobs
+# that run; on the test bed its stand-in (sync.sh) names the full job alone, and Zuul skips gate's other jobs.
+CHEAP = ["aid-seam-lint", "aid-seam-lint-test", "aid-apps-lint", "aid-apps-lint-test", "aid-cheap-checks"]
 FULL = ["aid-bazel-everything"]
+PLANNED = ["aid-gate-plan", *FULL]
+
+
+def gate_passed(builds):
+    """The plan and the jobs it named passed, and gate's other jobs, if listed, were skipped."""
+    return (all(builds.get(job) == "SUCCESS" for job in PLANNED)
+            and all(result == "SKIPPED" for job, result in builds.items() if job not in PLANNED))
 
 TIMEOUT_JOB = """\
 # Added by the test bed's pull request: a job that runs longer than its timeout.
@@ -659,7 +667,7 @@ def ready_means_queued(bed):
     old = bed.main_head()
     bed.mark_ready(pull)
     buildset, builds = bed.result(pull, "gate")
-    expect(builds == {job: "SUCCESS" for job in FULL}, f"gate ran the full jobs {FULL}, not check's, and they passed")
+    expect(gate_passed(builds), f"gate ran its plan and the full jobs it named {FULL}, not check's, and they passed")
     expect(buildset["result"] == "SUCCESS", "gate passed")
     expect(bed.commit_status(pull, pipeline="gate") == "success", "Zuul reported gate's success on the pull request")
     merged = bed.merged(pull)
@@ -753,7 +761,7 @@ def new_head_comes_back(bed):
     bed.stays_out_of_gate(pull, "Zuul has not yet heard that check passed on its new head", seconds=20)
     bed.send_check_passed(pull)
     buildset, builds = bed.result(pull, "gate")
-    expect(buildset["result"] == "SUCCESS" and builds == {job: "SUCCESS" for job in FULL},
+    expect(buildset["result"] == "SUCCESS" and gate_passed(builds),
            "check's success alone brought the new head into gate, with no ready, label or comment event, and it passed")
     bed.merged(pull)
     log(f"  ok: #{pull['number']} merged")
@@ -792,7 +800,7 @@ def post_job_gets_secret(bed):
 
     probe = output("testbed-secret-probe")
     digest = hashlib.sha256(bed.args.secret.encode()).hexdigest()
-    expect(builds["testbed-secret-probe"]["result"] in ("SUCCESS", "POST_FAILURE"), "the job that may have its secret passed its run (POST_FAILURE: #1540)")
+    expect(builds["testbed-secret-probe"]["result"] == "SUCCESS", "the job that may have its secret passed")
     expect(f"testbed secret sha256 {digest}" in probe, "the value that reached it is the fixture's, by its SHA-256")
     _, found = bed.zuul.get(f"/build/{builds['testbed-secret-probe']['uuid']}")
     artifacts = {artifact["name"]: artifact.get("metadata", {}) for artifact in found.get("artifacts", [])}
@@ -818,7 +826,7 @@ print(json.dumps(jwt.decode(given["token"], key, algorithms=["RS256"], audience=
 
 
 def oidc_token_is_the_pushers(bed, build):
-    expect(build["result"] in ("SUCCESS", "POST_FAILURE"), f"the job with an OIDC secret passed its run ({build['result']}; POST_FAILURE: #1540)")
+    expect(build["result"] == "SUCCESS", "the job with an OIDC secret passed")
     _, found = bed.zuul.get(f"/build/{build['uuid']}")
     artifacts = {artifact["name"]: artifact.get("metadata", {}) for artifact in found.get("artifacts", [])}
     token = artifacts.get("testbed-pusher", {}).get("token", "")
@@ -941,7 +949,7 @@ def two_agent_loop(bed, number):
     old = bed.main_head()
     bed.review(pull, "APPROVE", "Round 3: nothing blocks.")
     buildset, builds = bed.result(pull, "gate")
-    expect(buildset["result"] == "SUCCESS" and builds == {job: "SUCCESS" for job in FULL},
+    expect(buildset["result"] == "SUCCESS" and gate_passed(builds),
            "the reviewer's approval of its head let it into gate, and it passed")
     merged = bed.merged(pull)
     expect(merged["merged_by"] is not None, f"Zuul merged it (as {merged['merged_by']['login']})")
@@ -979,10 +987,11 @@ def main():
     if args.loop_pull:
         checks = [layout_loads, lambda bed: two_agent_loop(bed, args.loop_pull)]
     else:
-        # A throwaway run for AIDepartment#1637 (not its file of record): checks 1 and 11 only, while #1540 breaks check 2.
-        checks = [layout_loads]
+        checks = [layout_loads, new_job_runs_speculatively, untrusted_base_job_is_refused,
+                  untrusted_pipeline_is_refused, external_job_cannot_read_farm, job_timeout, ready_means_queued,
+                  hold, speculative_queue, new_head_comes_back]
         if args.secret:
-            checks += [post_job_gets_secret]
+            checks += [post_job_gets_secret, pull_request_cannot_have_secret]
         else:
             log("Checks 11 and 12 are left out: the aid-zuul-config checkout has no secrets guard (sync.sh).")
     try:

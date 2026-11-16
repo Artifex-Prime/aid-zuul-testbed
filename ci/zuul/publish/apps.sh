@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Zuul's app publishing, the job aid-publish-apps in post (ci/zuul/publish.md): on a merge into main, every application
-# whose payload the merge changed is built, checked and published, as its app workflow's publish job does on GitHub
-# Actions (.github/workflows/app-<app>.yml), with the same commands, and its declaration goes into the release index.
+# whose payload the merge changed is built, checked and published; its declaration goes into the release index.
 #
 #   ci/zuul/publish/apps.sh build    which apps publish; each one's image built and checked, its declaration written
 #   ci/zuul/publish/apps.sh push     each built image through the pusher (Zuul's token: CI_PUBLISH_TOKEN_FILE); an
@@ -10,8 +9,8 @@
 #
 # One playbook each, so that each credential is made just before it is used, and only where: Zuul signs the pusher's
 # token as push's playbook starts, for at most three hours, and the App's tokens last an hour. What a stage decided and
-# made is kept under $ZUUL_STATE/apps/<app>/ for the next. Nothing of the merge queue's is reused here (#466 is GitHub
-# Actions'): each image is built and checked once, in this job.
+# made is kept under $ZUUL_STATE/apps/<app>/ for the next. No speculative image is reused: each image is
+# built and checked once in this job.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 # shellcheck source=ci/zuul/publish/job-env.sh
@@ -33,14 +32,9 @@ case $stage in
       dir=$apps/$APP
       mkdir -p "$dir"
       echo "== $APP: build, check and declare"
-      outputs "$dir/source" node ci/app-image.mjs "$APP"
-      outputs "$dir/build" node ci/build-image.mjs "apps/$APP" "$APP"
+      # As gate builds and checks it (ci/zuul/steps.sh), here once more on the merge.
+      app_image "$APP" "$dir"
       IMAGE=$(output "$dir/build" image)
-      export IMAGE
-      APP_LIMIT_ARGS="$(node ci/container-limits.mjs "apps/$APP/declaration.json" deploy/thunderbox/policy.json "$ARC")"
-      export APP_LIMIT_ARGS IMAGE_RUN=$PWD/ci/image-run.mjs
-      bash "apps/$APP/ci/check-image.sh"
-      node ci/image-summary.mjs "$APP"
       # The declaration first, pinned to the checked digest, which the pusher must return: an image is never
       # published without one (ci/publish-image.mjs).
       node ci/release-app.mjs "$APP" "${IMAGE##*@}"

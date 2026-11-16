@@ -1,29 +1,25 @@
 # Publishing from main on Zuul
 
-What GitHub Actions does for `main` today, outside pull requests, and how Zuul does it (#1350): the app images, AID's
-release, the release index and the nightly. The jobs are in kristofk/aid-zuul-config's `zuul.d/publish.yaml`, since
-each holds a secret ([`deploy/zuul/job-secrets.md`](../../deploy/zuul/job-secrets.md)); what each runs is a script here,
-under [`publish/`](publish), which runs the same commands as the Actions job it stands beside.
+Zuul's trusted `post` jobs publish app images, AID releases and the release index from main;
+its periodic jobs run the nightly. The job definitions and secrets live in `kristofk/aid-zuul-config`;
+repository entrypoints are under [`publish/`](publish). This document describes the target after
+#1355's [held cutover](cutover.md). The existing turn-on procedure below remains **pending #1350
+through step 7**; do not remove the hold until its live publishing evidence is recorded.
 
-Until Zuul's switch (#1355), both CIs carry these jobs, and [`ci/publisher`](../publisher) says which one publishes
-([Which CI publishes](#which-ci-publishes)). It names `zuul`, since step 6 of [Turning it on](#turning-it-on).
 
 ## The pipelines, and who starts them
 
 | Pipeline | Starts on | Who can start it | Post-review | Its jobs |
 | --- | --- | --- | --- | --- |
-| `post` | a push to `main` | whoever merges: Mergify or Zuul's `gate`, or an administrator's push. `main` is protected, so nobody else | yes | `aid-release-credentials` (#1351), `aid-publish-apps`, `aid-release` |
+| `post` | a push to `main` | Zuul's `gate`, or the documented administrator state/recovery exception. `main` is protected, so nobody else | yes | `aid-release-credentials` (#1351), `aid-publish-apps`, `aid-release` |
 | `periodic-0200`, `periodic-0300` | a timer, at 02:00 UTC and at 03:00 UTC | nobody: Zuul's clock, on `main`'s head | yes | `aid-nightly` (this repository's), `aid-nightly-report` |
 
 Both are aid-zuul-config's (`zuul.d/pipelines.yaml`), and post-review, so the only pipelines where a job with a secret
 may run. Their items are refs, never a pull request, which the secrets' guard checks again.
 
-**No tag pipeline.** AID's release starts from `VERSION` on `main`, in `post`, and makes its own tag `aid-v<version>`
-when it creates the GitHub Release; a pipeline on tags would start again for that tag. The app workflows' tag job, which
-attaches a version's declaration to a `<app>-v<version>` tag someone pushes, has never run: no such tag exists
-(`git ls-remote --tags origin`, 2026-11-15, lists `aid-v*` only). It stays on GitHub Actions until #1355, which removes
-it or brings it over. A tag can name any commit, and a job on it would run that commit's scripts with a token: one
-taken over would check first that `main` contains the tag's commit.
+**No tag pipeline.** AID releases start from a VERSION change on main and create `aid-v<version>`
+when published. The unused app tag attachment jobs retire with Actions; no `<app>-v*` tag has ever
+been published (Kristóf's #1350 decision). App releases are discovered from their indexed declarations.
 
 **No reporter.** Neither pipeline has a pull request to report on. A failed release opens its issue (`aid-release`'s
 post-run, as `aid-release.yml`'s report job does). The nightly's result goes to its `ci-nightly` issue
@@ -50,8 +46,10 @@ that passed, so an app whose push fails does not fail `push`: `record` indexes e
 the job for it. A failure anywhere in `aid-release` opens the release's issue, a refusal by the plan included, unless
 the plan ran to its end and released nothing.
 
-**Not carried over from Actions:** the merge queue's checked images (#466). On Zuul the gate builds no image yet
-(#1521), so `post` builds and checks each image once itself, as Actions does without a queue image.
+**Not carried over from Actions:** the merge queue's checked images (#466). Zuul's gate builds and checks each image
+a pull request changes, with the same commands ([`steps.sh`](steps.sh), [`gate.md`](gate.md), "The gate's jobs"), but
+keeps none: a speculative state's image is never published. So `post` builds and checks each image once more itself,
+as Actions does without a queue image.
 
 [`publish/job-env.sh`](publish/job-env.sh) is the one place that maps Zuul's variables onto those the release scripts
 read, which GitHub Actions names: the push's range (`GITHUB_SHA`, the event's `before`), the run (`GITHUB_RUN_ID` is the
@@ -71,8 +69,9 @@ a BUILD file with no cached test result, on `main`'s head. Zuul's timer has no t
 passes having run nothing. A pipeline per time because Zuul tells a job its pipeline, not when its timer fired: an
 item that waits for the PR node past the other time keeps the decision of the timer that made it, in both jobs.
 
-That is the Bazel part of Actions' nightly. The rest of CI's jobs (the Node suites, the images, staging) come to Zuul
-with #1520 and #1521, and the nightly takes them then.
+That is the Bazel part of Actions' nightly. The rest of CI's jobs are check's (the Node suites, #1520) and gate's (the
+images, the ingress suite and the rest, #1521, [`gate.md`](gate.md), "The gate's jobs"); the nightly does not run them
+yet.
 
 `aid-nightly-report` (aid-zuul-config's `playbooks/nightly/`) runs beside it on the executor, with no node. It decides
 by the same pipeline's time and `ci/publisher` first, with no credential; only then does it make a token with `issues: write`,
@@ -126,35 +125,25 @@ Pages then builds the branch itself, with its own workflow (`pages-build-deploym
 in the `github-pages` environment, whose branch rule must allow `release-index` (step 5). What starts that build:
 
 - **A record by Zuul's jobs**: their push, with the App's token, starts it.
-- **A record by GitHub Actions**: its push, with Actions' own `GITHUB_TOKEN`, starts none (GitHub's documentation,
-  "Troubleshooting publishing from a branch"). The index jobs already dispatch `release-index.yml` after each record;
-  once Pages serves the branch, that workflow asks Pages for a build (`node ci/release-index.mjs pages`, `POST
-  /repos/<repository>/pages/builds`) instead of deploying. So the index stays published while Actions still
-  publishes (until step 6) and after a return to Actions.
-
-Until Pages is set to serve the branch, `release-index.yml` deploys the same files from Actions. Pages from a branch is
-GitHub's own build of what is on it, the one way to publish Pages without Actions; on another forge, the site's files
-are on the branch to serve from anywhere.
+The App's push starts GitHub's generated `pages-build-deployment` workflow on `release-index`.
+That GitHub-owned workflow is the one automation that stays: Pages needs it to serve the branch.
+There is no checked-in workflow YAML and no Actions artifact handover. The old dispatch/deploy
+workflow is removed only after #1350 step 5 proves branch publication works.
 
 One thing changes: a merge that changes how the site is written (`ci/release-index.mjs`) shows on Pages at the next
 record, not at once (#972's re-deploy).
 
 ## Which CI publishes
 
-[`ci/publisher`](../publisher) names `actions` or `zuul`. Each CI's publishing reads it, and the other's runs publish
-nothing:
-
-- **Actions:** the app workflows' publish (`ci/image-policy.mjs`), the release's plan (`ci/aid-release.mjs`), and the
-  nightly's clock (`ci/nightly.mjs`), so its report too.
-- **Zuul:** the same three, run by its jobs with `CI_SYSTEM=zuul`, and `aid-nightly-report`.
-
-A pull request that changes it moves publishing from one CI to the other at its merge. That merge itself is published
-by the CI it names, since each reads the file as merged. It builds no image anywhere: it is in no app workflow's
-`paths` ([`ci/workflow-policy.test.mjs`](../workflow-policy.test.mjs), `notTriggers`). #1355 removes the file with
-Actions' workflows.
+`ci/publisher` names `zuul`. Keep this fail-closed guard while the orchestrator completes the
+cutover: trusted publishing and nightly jobs refuse to run if it names another system. No
+Actions publishing workflows remain after this switch. Changing the marker alone is therefore
+not a rollback after #1355: restore the pre-cutover workflows/settings as described in [cutover.md](cutover.md).
 
 ## Turning it on
 
+The pre-cutover procedure owned by #1350. **Pending #1350 through step 7.** It runs before this
+workflow-removal PR merges, from the pre-cutover checkout, which still has its transition workflows.
 In order, each step only once the one before is done. Each says whose it is.
 
 0. **The post node's memory** (Kristóf's decision): ThunderBox's documented node budget is full (14336 of 14336 MiB),
@@ -205,6 +194,48 @@ In order, each step only once the one before is done. Each says whose it is.
 
 Undo: a pull request setting `ci/publisher` back to `actions`; Actions publishes again from its merge, and its
 records reach Pages through `release-index.yml`'s build request ([The release index](#the-release-index)).
+
+## Making a config-project merge live
+
+Until [#1642](https://github.com/kristofk/AIDepartment/issues/1642)'s webhook-path failure is fixed, after **each
+merge into `aid-zuul-config`**, explicitly reload tenant `aid` before re-enqueuing publishing or relying on the new
+configuration. A successful `check` loads the proposed configuration for that item; it does not prove the merged
+tenant layout is live. An empty `/api/tenant/aid/config-errors` alone does not prove freshness either.
+
+From a box with the tenant credential (or the admin, using `ssh thunderbox`):
+
+```sh
+export KUBECONFIG=~/.kube/devinfra.yaml
+kubectl -n zuul exec deploy/scheduler -- zuul-scheduler tenant-reconfigure aid
+kubectl -n zuul logs deploy/scheduler --since=5m
+curl -fsS http://zuul-web:9000/api/tenant/aid/config-errors
+```
+
+The command submits a reload; wait for its **new** `Reconfiguration complete (smart: False, tenants: ['aid'], …)`
+log entry, with the config project's changed `zuul.d/` files loaded from `main`, and check that `config-errors` is
+`[]`. Then check the behavior the change intended, such as the next publishing build's pusher acceptance. Do not use
+`smart-reconfigure` for this workaround: when `main.yaml` is unchanged it can report `Reconfigured tenants: []` and
+leave the repository configuration cached. This reload does not replay a missed `post` push; use the procedure
+below for that, after the configuration is live.
+
+The missing reload at 05:48Z on 2026-11-16 was a failed **push delivery**, not evidence that the scheduler lost an
+accepted event. GitHub's App delivery `4b091748-e181-11f1-9d77-46213b1fbc68`, for
+`aid-zuul-config`'s `main` update `20ab112a…dc048a4c` (PR #19), received HTTP **502** at 05:48:06Z. Funnel logged
+`http: proxy error: write tcp …: use of closed network connection`, and the webhook forwarder logged `Broken pipe`
+at that second. The two deliveries zuul-web did accept nearby were `pull_request/closed` and `check_suite/requested`;
+the push never reached its access log. Another delivery failed the same way at 06:20:43Z, without a web restart.
+The 06:05Z tenant reload loaded the change; the 06:04Z smart reload had reconfigured no tenant.
+
+For a missing automatic reload, inspect the App's **push** delivery and its attempts, correlating its GUID and UTC
+time with Funnel, forwarder, web and scheduler logs. A nearby successful PR-closure delivery is insufficient.
+Follow [Recovering failed GitHub deliveries](../../deploy/thunderbox/zuul.md#recovering-failed-github-deliveries)
+to inventory failures on both repositories and redeliver only GUIDs with no successful attempt. A tenant reload
+recovers the current configuration, but does not recover other missed events. The investigation on [#1640](https://github.com/kristofk/AIDepartment/issues/1640) redelivered that push once at
+06:26:57Z: GitHub recorded HTTP 200 at 06:26:58Z, and the scheduler logged `Tenant reconfiguration complete for aid`
+at 06:27:11Z with the same delivery GUID (12.801 seconds), with `config-errors` still `[]`. No scheduler restart or
+manual reload was needed for that replay. The remaining ingress repair and other failed deliveries are tracked in
+#1642. Keep the explicit reload until the transport fix proves reliable delivery and automatic reload, including
+after an idle interval.
 
 ## Running a publishing job again
 

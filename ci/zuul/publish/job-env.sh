@@ -58,8 +58,6 @@ if [ -n "${CI_GITHUB_TOKEN_FILE:-}" ]; then
     '!f() { [ "$1" = get ] || exit 0; echo username=x-access-token; printf "password=%s\n" "$(cat "$CI_GITHUB_TOKEN_FILE")"; }; f'
 fi
 
-# One step's outputs, as a workflow step's `>> "$GITHUB_OUTPUT"`: `outputs <file> <command...>` empties <file>, and runs
-# the command with GITHUB_OUTPUT pointing at it and its standard output appended to it (and shown in the log).
-outputs() { local file=$1; shift; : > "$file"; GITHUB_OUTPUT=$file "$@" | tee -a "$file"; }
-# A key's value in such a file.
-output() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
+# outputs and output, and the image steps gate shares with these jobs.
+# shellcheck source=ci/zuul/steps.sh
+. ci/zuul/steps.sh

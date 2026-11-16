@@ -17,7 +17,9 @@ from zuul.driver.github.githubmodel import GithubRefFilter, GithubTriggerEvent, 
 
 
 def check(path):
-    pipelines = [item["pipeline"] for item in yaml.safe_load(Path(path).read_text())]
+    # The pipelines GitHub starts: periodic-0200 and periodic-0300 are the timer's (#1350), and have no GitHub trigger.
+    pipelines = [item["pipeline"] for item in yaml.safe_load(Path(path).read_text())
+                 if "github" in item["pipeline"].get("trigger", {})]
     context = ParseContext(SimpleNamespace(connections={}), None, None, None)
     trigger = githubtrigger.GithubTrigger(None, {})
     filters = {}

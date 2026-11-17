@@ -31,7 +31,7 @@ testbed_repository=$(repository_of "$dest")
 
 find "$dest" "$config_dest" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 (cd "$config" && find . -mindepth 1 -maxdepth 1 ! -name .git -exec cp -R {} "$config_dest/" \;)
-# Compose's node replaces the production k3s provider for the same aid-node label. Keep the
+# Compose's node replaces the production k3s provider for the same aid-check-pod-node label. Keep the
 # production base job and playbooks; its real provider is tested on k3s, not Compose. The pipeline
 # changes for the workflow's token are below.
 rm -f "$config_dest/zuul.d/providers.yaml"
@@ -104,7 +104,8 @@ mkdir -p "$dest/ci" "$dest/deploy/zuul/server/config" "$dest/deploy/zuul/executo
 cp -R "$root/ci/zuul" "$dest/ci/zuul"
 mv "$pipelines.original" "$dest/ci/zuul/testbed/original-pipelines.yaml"
 cp "$root/deploy/zuul/server/config/zuul.conf" "$dest/deploy/zuul/server/config/"
-cp -R "$root/deploy/zuul/server/launcher" "$dest/deploy/zuul/server/"
+mkdir -p "$dest/deploy/zuul/server/launcher"
+cp "$root/deploy/zuul/server/launcher/"*.py "$dest/deploy/zuul/server/launcher/"
 cp "$root/deploy/zuul/server/zoo.cfg" "$dest/deploy/zuul/server/"
 cp "$root/deploy/zuul/secrets.sh" "$dest/deploy/zuul/"
 cp "$root/deploy/zuul/executor/store-logs.sh" "$dest/deploy/zuul/executor/"

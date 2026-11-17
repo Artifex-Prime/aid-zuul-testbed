@@ -68,8 +68,8 @@
     name: aid-cheap-checks
     parent: aid-script
     description: |
-      Quarantine validation, CI/workflow policy, legacy capture, and the affected Node suites, with Actions' commands
-      and quarantine behavior. A failure of any check or selected suite fails aid/check (#1520).
+      Quarantine validation, CI/workflow policy, legacy capture, and affected Node suites through Bazel on the farm,
+      with a pinned Node runtime, extraction, quarantine behavior and Bazel test caching. A failure of any check or selected suite fails aid/check (#1520).
     timeout: 1800
     vars:
       script: ci/zuul/cheap.mjs
@@ -86,7 +86,17 @@
       bazel_command: test
       # On the build farm, from a node with no compiler (#1345): .bazelrc's `zuul`, the farm by the cluster's address,
       # the workers' installed toolchains and no local fallback, under `dev`; main gets its own nodes (#1351).
-      bazel_flags: [--config=ci, --config=zuul]
+      # Keep pre-breaker RPC errors and the selected targets' actual outcomes with the job logs (#1719).
+      # These files are on the node, where the trusted base job's post-run fetches zuul-output/logs
+      # even after the Bazel command fails. No credential-helper output or HTTP headers are logged.
+      bazel_flags:
+        - --config=ci
+        - --config=zuul
+        - "--remote_grpc_log={{ ansible_user_dir }}/zuul-output/logs/remote-rpc.pb"
+        - "--execution_log_json_file={{ ansible_user_dir }}/zuul-output/logs/execution.json"
+        - "--build_event_json_file={{ ansible_user_dir }}/zuul-output/logs/build-events.jsonl"
+        # Keep BEP emission independent of an unavailable remote uploader.
+        - --nobuild_event_json_file_path_conversion
       bazel_targets: ["//..."]
 
 # The gate (#1521, gate.md, "The gate's jobs"): CI's queue layer, each of its steps a job, with ci/zuul/gate.sh running
@@ -103,12 +113,16 @@
       script: ci/zuul/gate.sh
 
 # The image jobs' node (deploy/zuul/gate-node/): its own BuildKit, the scratch registry and the image-check namespace,
-# and no secret and no farm token. The staging node (deploy/zuul/staging-node/): Docker with compose.
+# and no publishing secret. The projected aid-build-farm token is mounted but unused until #1701:
+# exact zuul-gate:gate maps to zuul-gate/dev; only trusted zuul-post:post maps to zuul-post/main.
+# The PR identity stays zuul-pr/dev. Revoke these independently in farm-revoked. #1733 prepares
+# the routes/tokens without changing consumers; the orchestrator alone releases the cutover hold.
+# The staging node (deploy/zuul/staging-node/): Docker with compose.
 - nodeset:
     name: aid-gate-image
     nodes:
       - name: node
-        label: aid-gate-node
+        label: aid-gate-pod-node
 
 - nodeset:
     name: aid-staging

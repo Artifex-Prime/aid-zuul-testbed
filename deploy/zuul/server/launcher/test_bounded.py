@@ -1,11 +1,16 @@
 """Run with the pinned Zuul 14.3 runtime; no cluster or credentials required."""
 import unittest
+import logging
+import time
+from contextlib import nullcontext
 from types import SimpleNamespace as S
 from unittest.mock import Mock, patch
 
 from kubernetes.client import ApiClient
 from kubernetes.client.exceptions import ApiException
 from zuul.driver.kubernetes import KubernetesDriver
+from zuul.launcher.server import Launcher
+from check_ssh import check_labels
 from zuul.driver.kubernetes.kubernetesmodel import KubernetesProviderNode
 import bounded
 
@@ -114,6 +119,61 @@ class Lifecycle(unittest.TestCase):
         with self.assertRaises(ApiException):
             bounded.Delete(self.endpoint, self.node, None).advance()
 
+    def test_upstream_cleanup_retains_failed_timed_out_and_restarted_deletes(self):
+        # Exercise the real caller: it calls fail() on both exceptions and
+        # DELETE_TIMEOUT. Its ZK/tracing boundary is the only stand-in.
+        log = Mock()
+        launcher = S(log=log, createZKContext=lambda *args: nullcontext(None),
+                     _getProviderForNode=lambda *args, **kwargs: S(
+                         driver=S(name='kubernetes'),
+                         getDeleteStateMachine=lambda node, log: bounded.Delete(self.endpoint, node, log)),
+                     nodescan_worker=Mock(), wake_event=Mock(), api=Mock(),
+                     tracer=S(start_as_current_span=lambda *args, **kwargs: nullcontext(None)),
+                     DELETE_TIMEOUT=Launcher.DELETE_TIMEOUT)
+        self.node._lock = None
+        self.node.activeContext = lambda ctx: nullcontext(None)
+        self.node.nodescan_request = None
+        self.node.delete_state_machine = None
+        self.node.state = 'deleting'
+        self.node.State = S(REBUILDING='rebuilding')
+        self.node.request_id = 'request'
+        self.node.delete = Mock()
+        self.node.releaseLock = Mock()
+        self.node.span_info = None
+        self.node.getSpanAttributes = lambda: {}
+        launcher.api.getNodesetRequest.return_value = None
+        for status in (503, 403):
+            self.api.delete_namespaced_pod.side_effect = ApiException(status=status)
+            Launcher._cleanupNode(launcher, self.node, log)
+            self.assertFalse(self.node.delete_state_machine.complete)
+            self.node.delete.assert_not_called()
+        self.api.delete_namespaced_pod.side_effect = None
+        self.api.read_namespaced_pod.side_effect = ApiException(status=503)
+        Launcher._cleanupNode(launcher, self.node, log)
+        self.node.delete.assert_not_called()
+        machine = self.node.delete_state_machine
+        machine.start_time = time.time() - Launcher.DELETE_TIMEOUT - 1
+        Launcher._cleanupNode(launcher, self.node, log)
+        self.assertFalse(machine.complete, 'the upstream timeout must retain the allocation')
+        self.node.delete.assert_not_called()
+        self.node.delete_state = machine.toDict()
+        self.node.delete_state_machine = None  # launcher restart
+        self.api.read_namespaced_pod.side_effect = None
+        Launcher._cleanupNode(launcher, self.node, log)
+        self.node.delete.assert_not_called()  # still terminating
+        self.api.read_namespaced_pod.side_effect = ApiException(status=404)
+        with patch('zuul.launcher.server.tracing.restoreSpan'), \
+             patch('zuul.launcher.server.trace.use_span', return_value=nullcontext(None)):
+            Launcher._cleanupNode(launcher, self.node, log)
+        self.assertTrue(self.node.delete_state_machine.complete)
+        self.node.delete.assert_called_once()
+        self.node.releaseLock.assert_called_once()
+
+    def test_real_provider_labels_scan_ssh_and_populate_executor_known_hosts(self):
+        check_labels([dict(name=name, kind='pod', image=name, flavor=name, spec={},
+                           project_canonical_name='github.com/kristofk/aid-zuul-config')
+                      for name in ('aid-node', 'aid-gate-node', 'aid-post-node')])
+
     def test_namespace_kind_connection_and_unpinned_images_fail_closed(self):
         self.endpoint.connection.connection_config['namespace'] = 'zuul'
         with self.assertRaises(ValueError):
@@ -142,6 +202,24 @@ class Lifecycle(unittest.TestCase):
         instances = list(bounded.Endpoint.listInstances(self.endpoint))
         self.assertEqual(instances[0].external_id, 'pod=np0123456789abc')
         self.assertEqual(instances[0].getQuotaInformation().getResources()['pods'], 1)
+
+    def test_additive_install_keeps_static_driver_factories_and_reuse(self):
+        from zuul.driver.static import StaticDriver
+        from zuul.driver.static.staticprovider import StaticProvider
+        before = (StaticDriver._endpoint_class, StaticProvider.parseLabel,
+                  StaticProvider.getCreateStateMachine, StaticProvider.getDeleteStateMachine)
+        bounded.install()
+        self.assertEqual(before, (StaticDriver._endpoint_class, StaticProvider.parseLabel,
+                                  StaticProvider.getCreateStateMachine, StaticProvider.getDeleteStateMachine))
+        for name in ('aid-node', 'aid-gate-node', 'aid-post-node', 'aid-staging-node'):
+            label = StaticProvider.parseLabel(None, dict(name=name, image=name, flavor=name, config_hash='regression',
+                project_canonical_name='github.com/kristofk/aid-zuul-config'), {}, None)
+            self.assertTrue(label.reuse)
+            self.assertTrue(label.host_key_checking)
+        driver = KubernetesDriver()
+        for part, ns in [('check', 'zuul-nodes'), ('gate', 'zuul-gate'), ('post', 'zuul-post')]:
+            connection = driver.getConnection(f'aid-{part}-pods', dict(driver='kubernetes', namespace=ns))
+            self.assertEqual(bounded.namespace(S(connection=connection)), ns)
 
     def test_factory_is_compatible_with_pinned_upstream_and_node_driver_data(self):
         bounded.install()

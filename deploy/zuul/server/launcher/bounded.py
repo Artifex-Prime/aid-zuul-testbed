@@ -7,13 +7,14 @@ pod spec. Only the launcher loads this module; scheduler validation stays upstre
 """
 import copy
 import re
+import time
 from enum import StrEnum
 
 from kubernetes.client.exceptions import ApiException
 from zuul.driver.kubernetes import KubernetesDriver
 from zuul.driver.kubernetes.kubernetesendpoint import KubernetesProviderEndpoint
 from zuul.driver.kubernetes.kubernetesmodel import KubernetesInstance
-from zuul.driver.kubernetes.kubernetesprovider import KubernetesProvider
+from zuul.driver.kubernetes.kubernetesprovider import KubernetesProvider, KubernetesProviderLabel
 from zuul.model import QuotaInformation
 from zuul.provider import statemachine
 
@@ -101,6 +102,13 @@ class Delete(statemachine.StateMachine):
         super().__init__(node.delete_state)
         self.endpoint, self.node = endpoint, node
 
+    def fail(self):
+        # Launcher._cleanupNode invokes fail() on API errors AND its deletion
+        # timeout, then drops a completed allocation. A pod's absence is the only
+        # completion signal here. Retain the node/quota and start another attempt.
+        self.state, self.complete = self.START, False
+        self.start_time = time.time()
+
     def advance(self):
         # The deterministic name also covers an API create that succeeded just
         # before the launcher lost its ZooKeeper context and rolled back fields.
@@ -157,9 +165,18 @@ def install():
         return Create(provider.endpoint, node, f'np{node.uuid}', label,
                       provider.flavors[label.flavor], provider.images[label.image], log)
 
+    def parse_label(provider, label_config, provider_config, connection):
+        label = KubernetesProviderLabel(label_config, provider_config)
+        # Upstream assumes kubectl and forcibly disables this in __init__.
+        # These nodes use SSH: nodescan must populate known_hosts and inventory
+        # must never select StrictHostKeyChecking=false, including for post.
+        label.host_key_checking = True
+        return label
+
     def delete(provider, node, log):
         return Delete(provider.endpoint, node, log)
 
+    KubernetesProvider.parseLabel = parse_label
     KubernetesProvider.getCreateStateMachine = create
     KubernetesProvider.getDeleteStateMachine = delete
     KubernetesDriver._endpoint_class = Endpoint

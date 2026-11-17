@@ -83,6 +83,24 @@ node has no compiler and no local fallback. The farm toolchain, dependency metad
 proof is build `a52d31e7a74846b386930c3495c54115` on 2026-11-15: 1822 actions, 30 tests passed,
 21 executed, in 1519.002 seconds (#1485). It proves that Bazel job, not coverage of other gate jobs.
 
+Execution RPC deadlines include queue time. A burst of valid queued actions can therefore exceed
+multiple call deadlines while workers keep making progress. Zuul sets the failure-rate threshold to
+100, preventing the failure breaker from aborting the whole invocation before the existing bounded
+RPC retries can finish those actions (#1719). Per-call deadlines and the retry limit still apply;
+an unavailable or permanently stalled farm fails. The default `remote` configuration retains its
+failure breaker for clients that can fall back locally. `ci/bazel-fallback.mjs` covers both the
+old early-abort trigger and successful remote completion with Zuul's threshold, plus refused service.
+
+The job retains `remote-rpc.pb`, `execution.json` and `build-events.jsonl` under its log URL,
+including when Bazel fails. The RPC log captures method/status/timestamps before the circuit breaker
+can refuse later calls; the other logs distinguish actual remote execution, cached results and unrun
+targets. The trusted base job fetches the node's `~/zuul-output/logs` in post-run. See the farm's
+[RPC abort procedure](../../deploy/thunderbox/build-farm.md#an-rpc-circuit-breaker-abort)
+for decoding, correlation and recovery requirements. A breaker abort is not a test pass or a test flake.
+The BEP keeps local file paths rather than uploading referenced files through the failed farm; those
+paths describe the build node and are not retained test-output attachments. A failure before execution
+can leave an empty execution log, and interruption can leave partial logs; neither proves a target passed.
+
 ## The gate's jobs
 
 Gate runs what CI's queue run on GitHub Actions runs before `Every package passed` (#1521): each of its steps is a job
@@ -134,10 +152,18 @@ suite's, the infrastructure checks' and the quarantine runs' jobs, one at a time
 image carries the Swift runtime libraries, without a compiler, for the farm-built `aid` the ingress suite starts. The
 gate's image node ([`deploy/zuul/gate-node/`](../../deploy/zuul/gate-node/README.md)) runs the image jobs: the post
 node's image, with a BuildKit of its own ([`deploy/zuul/gate-buildkit/`](../../deploy/zuul/gate-buildkit/README.md)),
-the scratch registry and the image-check namespace, no secret and no farm token. The staging node
+the scratch registry and the image-check namespace, with no publishing secret. Its projected `aid-build-farm`
+token is mounted but unused until #1701: exact subject `system:serviceaccount:zuul-gate:gate` maps to
+`zuul-gate`/dev, while only trusted `system:serviceaccount:zuul-post:post` maps to `zuul-post`/main.
+The PR node stays `zuul-pr`/dev; each identity is revoked separately through `farm-revoked`.
+[Prerequisite deployment](../../deploy/zuul/image-build-prerequisites/README.md) preserves BuildKit and current
+consumers; only the orchestrator releases the held switch after its live dependencies. The staging node
 ([`deploy/zuul/staging-node/`](../../deploy/zuul/staging-node/README.md)) is Docker, for staging alone.
-Each job gets a fresh pod. `gate.sh` writes in its disposable work directory; there is no previous job state or
-Bazel process to clean up. Node allocation, quotas, caches and rollout: [disposable-nodes.md](disposable-nodes.md).
+Every check/gate/post job runs in a fresh disposable pod. `gate.sh` creates job-local temporary work;
+it does not inspect or terminate earlier processes, repair a reused state directory, or shut down a warm
+Bazel server for the next job. The launcher deletes the pod after the job, including cancellation.
+Image-check cleanup still deletes that build's separate scratch pods. Provisioning, proof and rollback follow
+[disposable-nodes.md](disposable-nodes.md).
 
 ### Turning the gate's jobs on
 
@@ -164,3 +190,8 @@ in [cutover.md](cutover.md).
 The testbed's `testbed/check-github-gate.py` and `testbed/scenario.py` exercise approval,
 current-head handling, holding, timeouts, speculative ordering and regating independently
 of production job coverage. Historical rollout evidence is in [comparison.md](comparison.md).
+
+Node suites are Bazel tests (#1313): `aid-cheap-checks` selects `//:node_<suite>` and CI policy targets,
+`aid-bazel-everything` includes them through `//...`, and `aid-gate-quarantine-node` invokes the manual uncached
+`//:node_quarantine` action. The wrappers execute on the farm with pinned Node; results are Bazel-cached.
+See [README.md](README.md#the-cheap-checks) for inputs, loopback requirements and report retrieval.

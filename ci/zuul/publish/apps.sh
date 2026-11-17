@@ -21,7 +21,7 @@ apps=$ZUUL_STATE/apps
 
 case $stage in
   build)
-    rm -rf "$apps"; mkdir -p "$apps"
+    mkdir -p "$apps"
     trap 'node ci/image-run.mjs cleanup || true' EXIT
     for check in apps/*/ci/check-image.sh; do
       APP=$(basename "$(dirname "$(dirname "$check")")")

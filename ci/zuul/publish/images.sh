@@ -26,7 +26,7 @@ images=$ZUUL_STATE/images
 
 case $stage in
   build)
-    rm -rf "$images"; mkdir -p "$images"
+    mkdir -p "$images"
     for name in zuul-node build-farm-worker; do
       outputs "$images/$name.policy" node ci/zuul/publish/images.mjs "$name"
       [ "$(output "$images/$name.policy" publish)" = true ] || continue

@@ -40,6 +40,9 @@ playbooks of their own, and each stage gets only the credentials it uses, made a
 | `record` | each pushed image's declaration into the release index | the GitHub Release `aid-v<version>`, then its entry into the index | the App's token, `contents: write` |
 | `report` | | after a failure only: the release's issue | the App's token, `issues: write` |
 
+The release folder uses the post node's cgroup CPU and memory budget (#1695), with no separate
+`RELEASE_JOBS` override; size the post node's pod instead ([executor resources](README.md#executor-resources)).
+
 What a stage hands to the next is in `ZUUL_STATE` on the node: the plan, the images by digest, the declarations and
 the entry, as files. Nothing goes through a forge's artifacts (#1286). Zuul runs a job's next playbook only after one
 that passed, so an app whose push fails does not fail `push`: `record` indexes every app that did publish, then fails
@@ -84,14 +87,14 @@ compiled, has the job's two hours of its own.
 ### The nightly
 
 `aid-nightly` is this repository's job ([`zuul.d/jobs.yaml`](zuul.d/jobs.yaml)), untrusted and with no secret, on the
-PR node with the farm's `dev` credential: [`publish/nightly.sh`](publish/nightly.sh) builds and tests everything with
+PR node with the farm's `dev` credential: [`publish/nightly.sh`](publish/nightly.sh) builds and tests everything (Swift and Node) with
 a BUILD file with no cached test result, on `main`'s head. Zuul's timer has no time zone, so it fires at 02:00 UTC
 (`periodic-0200`) and at 03:00 UTC (`periodic-0300`), and `ci/nightly.mjs`'s clock lets through only the one that is
 04:00 in Madrid (the owner's decision of 2026-10-20, #225), and only while `ci/publisher` names Zuul. Otherwise it
 passes having run nothing. A pipeline per time because Zuul tells a job its pipeline, not when its timer fired: an
 item that waits for the PR node past the other time keeps the decision of the timer that made it, in both jobs.
 
-That is the Bazel part of Actions' nightly. The rest of CI's jobs are check's (the Node suites, #1520) and gate's (the
+The nightly includes Swift and Node tests through Bazel. The remaining jobs are gate's (the
 images, the ingress suite and the rest, #1521, [`gate.md`](gate.md), "The gate's jobs"); the nightly does not run them
 yet.
 

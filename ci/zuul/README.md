@@ -67,14 +67,27 @@ the steps (#1341):
   since each of those jobs holds a secret ([publish.md](publish.md)). The [comparison](comparison.md) records the
   cheap and gate coverage gaps of 2026-11-15, which #1520 (check's) and #1521 (gate's, these jobs) close.
 
+## Executor resources
+
+Set CPU and memory on each executor's pod/nodeset, in `deploy/zuul/` and the trusted
+`aid-zuul-config` provider definitions. Build scripts carry no node-specific jobs budget (#1695).
+Bazel's `HOST_CPUS` and `HOST_RAM` honour the node's cgroup, including for local work on a remote
+build; the farm retains its own 200-job queue and worker slot limits. The release folder's clean
+local build reads the post, image or staging node's `cpu.max` and `memory.max`, using the same
+67% RAM fraction as Bazel. See [Build resource limits](../../docs/development.md#build-resource-limits).
+
 ## The cheap checks
 
 `aid-cheap-checks` calls [`cheap.mjs`](cheap.mjs) with `zuul.branch`, beside the four lint jobs in both `check` and
-`check-external`. It first runs Actions' repository commands, in order:
+`check-external`. It first runs:
 
-- `node ci/quarantine.mjs check`
-- `node ci/quarantine.mjs node-test --import ./ci/test-progress.mjs --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./ci/test-file-failures.mjs --test-reporter-destination=stdout -- ci/*.test.mjs`
-- `node ci/quarantine.mjs node-test -- scripts/capture-github-legacy.test.mjs`
+```sh
+bazel test --config=ci --config=zuul -- //:node_quarantine_check //:node_ci //:node_legacy
+```
+
+These are Bazel test actions on the farm, with the pinned Node runtime and the existing quarantine wrapper.
+The expiry check is uncached because its answer depends on today's date. CI test files have individual targets
+`//:node_ci_<file stem>`; `//:node_ci` groups all of them.
 
 A failed command fails the voting job before suites run. Then `ci/affected.mjs` plans the difference between
 `refs/remotes/origin/<target-branch>` and `HEAD`. Zuul preserves that remote ref as the state before the queue item's
@@ -82,26 +95,19 @@ speculative merge ([Zuul's Git repositories](https://zuul-ci.org/docs/zuul/lates
 it covers every commit of a rebased pull request without fetching a newer base. If the diff cannot be read, every
 Node suite runs. Unknown paths use the planner's existing full fallback.
 
-Only the plan's Node suites run, from [`../node-suites.json`](../node-suites.json), the commands shared with `ci/local-tests.mjs` and the
-Actions cutover (#1608). This registry preserves the application extraction, adapter tests and application CI tests,
-mock AID, lab and page script commands. The quarantine wrapper skips quarantined tests in the blocking runs; expired
-or invalid entries fail the initial check. A selected suite with no command fails the job. Suites run sequentially,
-with shell error propagation within each and a result for later suites even if an earlier one fails. Any failure
-fails `aid/check`; no cached or skipped policy result substitutes for success.
+Only the plan's Node suites run, as `bazel test --config=ci --config=zuul -- //:node_<suite> ...`.
+The commands inside those actions come from [`../node-suites.json`](../node-suites.json), shared with the local
+helper. Each adapter target preserves its extraction, adapter tests and CI tests. Mock AID, lab and page script
+have targets too. An unknown suite fails closed; any failing target fails `aid/check`.
 
-The job node needs Node, Python, git, `cc` with libc headers (the root guard's private Linux fixtures), and `readelf`
-(the node-image checks). `deploy/zuul/node/image/` installs and checks them as the job user. The first ordinary run of
-this job on #1644, build `8bbcbf6cacc84c59ad346e58179f59f9`, failed closed because the deployed older image had neither
-`cc` nor `readelf`: its CI policy tests failed and suites did not run. The checked image containing these prerequisites
-must be published and rolled out through the existing node-image process before production check can pass. This
-change does not roll out a node or release the held cutover.
-
-The runner reads no workflow YAML for execution. While Actions remains, `ci/zuul-cheap.test.mjs` checks command
-parity against `ci.yml`, and exercises selection and failures in scratch repositories. No extra measurement run is
-needed. The Compose testbed keeps its script stand-ins and includes the new job in its scheduling assertions.
-
-The trust boundary stays in the existing trusted base: it rejects `check-external` before any untrusted hook until
-credential-free nodes exist. Adding this script job does not enable external execution or change node credentials.
+Bazel owns test caching. A second unchanged run reuses Node results, except the date-sensitive quarantine check.
+Tests run from writable declared-input copies on the farm, with a private HOME and pinned Node on PATH.
+`requires-loopback` targets need the farm workers' ephemeral loopback listeners. Their shell/git/Python/OpenSSL/C
+fixtures use the workers' platform userland; no suite needs a live network service or Docker daemon.
+Gate's `aid-bazel-everything` and the nightly include these targets through `//...`; the nightly disables test caching.
+`aid-gate-quarantine-node` runs the manual, uncached `//:node_quarantine` action and copies its report from Bazel outputs.
+No Node test executes on the PR node or builder box. The script/testbed checks exercise selection and error propagation
+with fake Bazel commands; they never start another farm build from inside a test action.
 
 ## Adding or changing a job
 

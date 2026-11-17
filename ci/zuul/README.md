@@ -17,6 +17,7 @@ runner retirement. After that switch, Zuul alone gates main and publishes from i
 | [`zuul.d/`](zuul.d) | the job library and AID's jobs, and which pipeline runs which | runs on the pull request itself |
 | [`playbooks/`](playbooks) | the library's playbooks and their roles | runs on the pull request itself |
 | [`testbed/`](testbed) | Zuul on both, in Docker Compose, with checks | |
+| [`disposable-nodes.md`](disposable-nodes.md) | fresh pods per job, fixed-namespace Kubernetes driver, caches and coordinated rollout (#1698) | |
 | [`gate.md`](gate.md) | how `check`, `gate` and `hold` admit, test and merge reviewed changes | |
 | [`comparison.md`](comparison.md) | historical ordinary-run comparison with the prior CI, reporting times and remaining coverage/rollout gaps (#1353) | |
 | [`publish.md`](publish.md) | `post` and the periodic pipelines: the app images, AID's release, the release index and the nightly on Zuul, which CI publishes (`ci/publisher`), and turning it on (#1350) | |

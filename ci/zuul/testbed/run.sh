@@ -96,6 +96,10 @@ echo "== original GitHub pipelines and gate's write-approval requirement"
 docker run --rm --quiet -i --entrypoint python3 \
   --mount "type=bind,src=$here/original-pipelines.yaml,dst=/original-pipelines.yaml,readonly" \
   "$scheduler" - /original-pipelines.yaml < "$here/check-github-gate.py"
+echo "== bounded Kubernetes lifecycle against the pinned Zuul runtime"
+docker run --rm --quiet --entrypoint python3 \
+  --mount "type=bind,src=$root/deploy/zuul/server/launcher,dst=/bounded,readonly" \
+  "$scheduler" /bounded/test_bounded.py
 echo "== MQTT publish does not wait for AID or broker acknowledgment"
 docker run --rm --quiet -i --entrypoint python3 "$scheduler" - < "$here/check-mqtt.py"
 graphql=$(docker run --rm --quiet --entrypoint python3 "$scheduler" -c \

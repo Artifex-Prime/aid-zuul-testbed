@@ -1,6 +1,6 @@
 # Publishing from main on Zuul
 
-Zuul's trusted `post` jobs publish app images, AID releases and the release index from main;
+Zuul's trusted `post` jobs publish app images, AID releases, the release index and AID's infrastructure images from main;
 its periodic jobs run the nightly. The job definitions and secrets live in `kristofk/aid-zuul-config`;
 repository entrypoints are under [`publish/`](publish). This document describes the target after
 #1355's [held cutover](cutover.md). The existing turn-on procedure below remains **pending #1350
@@ -11,7 +11,7 @@ through step 7**; do not remove the hold until its live publishing evidence is r
 
 | Pipeline | Starts on | Who can start it | Post-review | Its jobs |
 | --- | --- | --- | --- | --- |
-| `post` | a push to `main` | Zuul's `gate`, or the documented administrator state/recovery exception. `main` is protected, so nobody else | yes | `aid-release-credentials` (#1351), `aid-publish-apps`, `aid-release` |
+| `post` | a push to `main` | Zuul's `gate`, or the documented administrator state/recovery exception. `main` is protected, so nobody else | yes | `aid-release-credentials` (#1351), `aid-publish-apps`, `aid-release`, `aid-publish-images` (#1650) |
 | `periodic-0200`, `periodic-0300` | a timer, at 02:00 UTC and at 03:00 UTC | nobody: Zuul's clock, on `main`'s head | yes | `aid-nightly` (this repository's), `aid-nightly-report` |
 
 Both are aid-zuul-config's (`zuul.d/pipelines.yaml`), and post-review, so the only pipelines where a job with a secret
@@ -59,6 +59,28 @@ App's token, read by git from its file.
 The job's timeout is the tenant's maximum, two hours, for all its stages: each copy through the pusher may take 15
 minutes (`CI_PUBLISH_TIMEOUT_SECONDS`), where Actions allows an hour.
 
+### The infrastructure images
+
+`aid-publish-images` ([`publish/images.sh`](publish/images.sh), #1650) publishes the images AID's CI runs on, which
+GitHub Actions' `zuul-node-image.yml` and `build-farm-worker.yml` published until #1608 removed them:
+
+| Image | Built and checked by | Published as | Applied by |
+| --- | --- | --- | --- |
+| The PR node's | `node ci/zuul-node-image.mjs build` | `aid/zuul-node:ubuntu26.04-<commit>` | [`deploy/zuul/node/README.md`](../../deploy/zuul/node/README.md) |
+| The post node's and the gate image node's | the same build, its `post` target | `aid/zuul-node:post-ubuntu26.04-<commit>` | [`deploy/zuul/post-node/README.md`](../../deploy/zuul/post-node/README.md), [`deploy/zuul/gate-node/README.md`](../../deploy/zuul/gate-node/README.md) |
+| The build farm's workers' | `node ci/build-farm-worker.mjs build` | `aid/build-farm-worker:<swift>-ubuntu26.04-<commit>` | [`deploy/build-farm/README.md`](../../deploy/build-farm/README.md), "Updating the image" |
+
+An image publishes on a merge that changes one of its inputs, `zuulNode` or `farmWorker` in
+[`ci/inputs.json`](../inputs.json) ([`publish/images.mjs`](publish/images.mjs)), and only while `ci/publisher` names
+Zuul. Gate checked it for the same inputs with the same command (`aid-gate-zuul-node-image`, `aid-gate-farm-worker`,
+[`gate.md`](gate.md)); `post` builds and checks it once more, as it does the apps. Two stages: `build` (the App's
+token, `contents: read`, for the push's base) builds each one's check target before the image, so an image that fails
+its check is never pushed; `push` (Zuul's token for the pusher) publishes each by its checked digest, and one that
+fails leaves the others published and fails the job. Nothing records or deploys them: the build's summary
+(`summary.md` in its logs) names each published image by tag and digest, which the admin applies as its README says.
+A separate job from the apps' so that the worker's build, a Swift toolchain downloaded and a Foundation program
+compiled, has the job's two hours of its own.
+
 ### The nightly
 
 `aid-nightly` is this repository's job ([`zuul.d/jobs.yaml`](zuul.d/jobs.yaml)), untrusted and with no secret, on the
@@ -99,7 +121,7 @@ and only this token of it (`ci/publish-image.mjs` sends it as the bearer, from `
 | `aud` | `thunderbox-registry`, as GitHub's tokens have it (`CI_PUBLISH_AUDIENCE`) |
 | `sub` | `secret:aid/github.com/kristofk/aid-zuul-config/aid-pusher`: the tenant, the config project and the secret. No pull request can name that secret (Zuul: "Secrets must be defined in the same project in which they are used") |
 | `pipeline` | `post` |
-| `job-name` | `aid-publish-apps` or `aid-release` |
+| `job-name` | `aid-publish-apps`, `aid-release` or `aid-publish-images` |
 | `exp` | at most three hours after `iat` |
 
 The test bed's check 11 has Zuul 14.3.0 sign such a token in `post` and checks each claim, and its signature against

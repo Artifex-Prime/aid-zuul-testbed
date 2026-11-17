@@ -44,7 +44,8 @@ How the build-and-review loop (`docs/review-loop.md`) runs on Zuul.
   `aid/gate`: queued, then in progress, then success and the merge, or failure with a comment that names the failed
   job and links its log. About 10 minutes after the pull request is ready, approved and `aid/check` passed on its
   head, `aid/gate` is there. If it is not (GitHub's event came late or not at all), comment `regate`, once. If that
-  starts nothing either, tell the orchestrator.
+  starts nothing either, tell the orchestrator. An approved pull request of kristofk/aid-zuul-config enters gate too,
+  which has no jobs for it: `aid/gate` goes from queued to skipped, and the orchestrator merges it (#1660).
 - **What wakes the bots.** The loop's automations ([`docs/review-loop.md`](../../docs/review-loop.md), "How AID routes
   the events") react to GitHub's review requests, submitted reviews and closed pull requests, never to a queue's
   events, so no queue-specific event is needed. The approval reaches the builder as every review does
@@ -135,6 +136,8 @@ gate's image node ([`deploy/zuul/gate-node/`](../../deploy/zuul/gate-node/README
 node's image, with a BuildKit of its own ([`deploy/zuul/gate-buildkit/`](../../deploy/zuul/gate-buildkit/README.md)),
 the scratch registry and the image-check namespace, no secret and no farm token. The staging node
 ([`deploy/zuul/staging-node/`](../../deploy/zuul/staging-node/README.md)) is Docker, for staging alone.
+Each job gets a fresh pod. `gate.sh` writes in its disposable work directory; there is no previous job state or
+Bazel process to clean up. Node allocation, quotas, caches and rollout: [disposable-nodes.md](disposable-nodes.md).
 
 ### Turning the gate's jobs on
 

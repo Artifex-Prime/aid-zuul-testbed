@@ -1,0 +1,21 @@
+#!/bin/bash
+# Use the baked binary offline only when it matches the requested version.
+# Ordinary jobs retain Bazelisk's version selection when the checkout pin changes.
+version=${USE_BAZEL_VERSION:-}
+if [[ -z "$version" ]]; then
+  directory=$PWD
+  while :; do
+    if [[ -f "$directory/.bazelversion" ]]; then
+      read -r version < "$directory/.bazelversion"
+      version=${version%$'\r'}
+      break
+    fi
+    [[ "$directory" != / ]] || break
+    directory=${directory%/*}
+    directory=${directory:-/}
+  done
+fi
+if [[ "$version" == 9.3.2 ]]; then
+  exec /usr/local/bin/bazel-9.3.2 "$@"
+fi
+exec /usr/local/bin/bazelisk "$@"

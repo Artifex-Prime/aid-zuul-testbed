@@ -1,0 +1,51 @@
+# Zuul gate keeps its executor/launcher ingress and reaches DNS, proxy, farm frontend and scratch.
+# The farm token grants dev only; the clean release stays local. ThunderBox grants API/pusher separately.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gate-node
+  namespace: zuul-gate
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zuul-executor}
+      ports:
+        - {protocol: TCP, port: 2222}
+        - {protocol: TCP, port: 19885}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zuul}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: launcher}
+      ports:
+        - {protocol: TCP, port: 2222}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 172.31.250.2/32}
+      ports:
+        - {protocol: TCP, port: 3128}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: build-farm}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: frontend}
+      ports:
+        - {protocol: TCP, port: 8980}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: arc-scratch}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: registry-scratch}
+      ports:
+        - {protocol: TCP, port: 5000}

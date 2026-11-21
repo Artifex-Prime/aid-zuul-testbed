@@ -1,0 +1,43 @@
+# No other node or tenant reaches this node. Jobs reach only DNS, the proxy and the farm.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: job-node
+  namespace: zuul-gate-compute
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zuul-executor}
+      ports:
+        - {protocol: TCP, port: 2222}
+        - {protocol: TCP, port: 19885}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zuul}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: launcher}
+      ports:
+        - {protocol: TCP, port: 2222}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 172.31.250.2/32}
+      ports:
+        - {protocol: TCP, port: 3128}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: build-farm}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: frontend}
+      ports:
+        - {protocol: TCP, port: 8980}

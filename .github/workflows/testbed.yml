@@ -6,9 +6,13 @@ on:
   workflow_dispatch:
     inputs:
       loop_pull:
-        description: The builder's pull request for the two-agent loop's check (13) alone; empty runs checks 1 to 12
+        description: The builder's pull request for the two-agent loop's check (14) alone; empty runs the standard scenarios
         required: false
         default: ""
+      native_launcher:
+        description: Only layout, real job dispatch and unknown-label validation
+        type: boolean
+        default: false
 permissions:
   contents: write
   pull-requests: write
@@ -27,9 +31,40 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: Artifex-Prime/aid-zuul-config-testbed
+          path: .scratch-config
+      - name: Scratch trusted playbooks under real Ansible and Zuul plugins
+        run: |
+          python3 -m venv /tmp/scratch-tests
+          /tmp/scratch-tests/bin/pip install -r .scratch-config/tests/requirements.txt
+          /tmp/scratch-tests/bin/pip install --no-deps -r .scratch-config/tests/zuul-requirements.txt
+          PATH=/tmp/scratch-tests/bin:$PATH /tmp/scratch-tests/bin/python -m unittest discover -s .scratch-config/tests -p test_scratch.py -v
+      - uses: jdx/mise-action@v2
+        with:
+          install: false
+      - name: Render real scratch PodTemplates and validate the installed hook contract
+        run: |
+          kv=$(sed -n 's/^kustomize = "\(.*\)"$/\1/p' deploy/zuul/mise.toml)
+          yv=$(sed -n 's/^yq = "\(.*\)"$/\1/p' deploy/zuul/mise.toml)
+          mise exec kustomize@$kv yq@$yv -- bash -euo pipefail -c '
+            for part in gate-node post-node node gate-compute-node; do
+              kustomize build deploy/zuul/$part | yq -o=json -I=0 '''select(.kind == "PodTemplate")''' > /tmp/$part.template.json
+            done
+            node deploy/zuul/scratch-hooks.mjs /tmp/gate-node.template.json /tmp/post-node.template.json /tmp/node.template.json /tmp/gate-compute-node.template.json
+          '
       - name: The layout of ci/zuul/ on Zuul
         run: ci/zuul/testbed/run.sh
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TESTBED_REPOSITORY: ${{ github.repository }}
+          TESTBED_NATIVE_LAUNCHER: ${{ inputs.native_launcher }}
           TESTBED_LOOP_PULL: ${{ inputs.loop_pull }}
+      - name: Preserve failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbed-diagnostics
+          path: testbed-diagnostics.txt
+          if-no-files-found: warn

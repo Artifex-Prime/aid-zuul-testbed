@@ -2,7 +2,7 @@
 # sync.sh: copies the layout into the test bed's two repositories (../README.md, "The test bed"):
 #   ci/zuul/testbed/sync.sh /path/to/testbed-checkout /path/to/aid-zuul-config-checkout /path/to/config-testbed-checkout
 # The test bed's checkout gets: ci/zuul/; from deploy/zuul/ the zuul.conf, ZooKeeper's configuration, secrets.sh and the
-# executor's log script (store-logs.sh, which the base job's post-run runs), and
+# executor's log script (store-logs.sh, which the base job's post-run runs), the observer runtime check, and
 # the images ThunderBox runs (as testbed.env, with the config copy's repository); what AID's jobs run (a stand-in for
 # each script a job names, .bazelversion, and a Bazel workspace whose one test is the gate's stand-in, from workspace/);
 # the workflow; and TESTBED, the commits it came from.
@@ -11,7 +11,7 @@
 # TESTBED. Everything in either checkout but .git is replaced. Commit and push
 # both to their main, the config copy first, then dispatch the workflow. The files of record are AIDepartment's and
 # aid-zuul-config's; the copies are only for the test. TESTBED_LOOP=1 makes the copies for the two-agent loop's run
-# (check 13), which keep gate's requirement of an approving review (below).
+# (check 14), which keep gate's requirement of an approving review (below).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -31,7 +31,8 @@ testbed_repository=$(repository_of "$dest")
 
 find "$dest" "$config_dest" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 (cd "$config" && find . -mindepth 1 -maxdepth 1 ! -name .git -exec cp -R {} "$config_dest/" \;)
-# Compose's node replaces the production k3s provider for the same aid-check-pod-node label. Keep the
+# Compose supplies two check nodes and two separate compute nodes for the testbed
+# window=2 acceptance scenario. Production compute/window remain one. Keep the
 # production base job and playbooks; its real provider is tested on k3s, not Compose. The pipeline
 # changes for the workflow's token are below.
 rm -f "$config_dest/zuul.d/providers.yaml"
@@ -82,8 +83,8 @@ if [ "$(grep -c '^ *status: failure$' "$pipelines")" -ne "$(grep -A1 '^ *status:
   echo "$pipelines: a failure reporter does not comment, so a configuration error would not be seen" >&2; exit 1
 fi
 # gate's requirement of an approving review (#1348): the run's token opens every pull request of the scenario, and
-# GitHub lets nobody approve their own. So the copy for checks 1 to 12 leaves the requirement out. With TESTBED_LOOP=1
-# it keeps it, for check 13 alone: there the builder's pull request is someone else's, which the run's token approves
+# GitHub lets nobody approve their own. So the copy for checks 1 to 13 leaves the requirement out. With TESTBED_LOOP=1
+# it keeps it, for check 14 alone: there the builder's pull request is someone else's, which the run's token approves
 # (README.md, "The two-agent loop on the test bed").
 approvals=$(grep -c '^ *- type: approved$' "$pipelines" || true)
 if [ "${TESTBED_LOOP:-}" = 1 ]; then
@@ -109,6 +110,13 @@ cp "$root/deploy/zuul/server/launcher/"*.py "$dest/deploy/zuul/server/launcher/"
 cp "$root/deploy/zuul/server/zoo.cfg" "$dest/deploy/zuul/server/"
 cp "$root/deploy/zuul/secrets.sh" "$dest/deploy/zuul/"
 cp "$root/deploy/zuul/executor/store-logs.sh" "$dest/deploy/zuul/executor/"
+# run.sh checks the observer in the pinned scheduler. Copy its Python runtime and test fixture:
+# the production BUILD.bazel pulls unrelated packages into the minimal test workspace.
+mkdir -p "$dest/deploy/zuul/observability"
+cp "$root/deploy/zuul/observability/observer.py" "$root/deploy/zuul/observability/observer_test.py" \
+  "$root/deploy/zuul/observability/rules-test.yaml" "$dest/deploy/zuul/observability/"
+# The config copy's Bazel role uses these real helpers even when job scripts are stand-ins.
+cp "$root/ci/shared-distdir.py" "$root/ci/bazel-job.py" "$root/ci/bazel-log-budget.json" "$dest/ci/"
 # A stand-in for each script a job of AID's names: the test bed's repository is public, and holds only what Zuul needs.
 scripts=$(sed -n 's/^      script: //p' "$root/ci/zuul/zuul.d/jobs.yaml")
 [ -n "$scripts" ] || { echo "no script in ci/zuul/zuul.d/jobs.yaml: look at sync.sh again" >&2; exit 1; }
@@ -184,6 +192,12 @@ pinned() { # pinned <manifest>: its one image
 {
   echo "# The config project's copy, and the images ThunderBox runs, from deploy/zuul/ (sync.sh)."
   echo "TESTBED_CONFIG_REPOSITORY=$config_repository"
+  # A broker connection alone does not mean the trusted pipelines report to it (#1526).
+  if grep -qE '^ +aid-events:' "$pipelines"; then
+    echo "TESTBED_REPORTS=1"
+  else
+    echo "TESTBED_REPORTS=0"
+  fi
   echo "ZUUL_SCHEDULER_IMAGE=$(zuul_image scheduler)"
   echo "ZUUL_WEB_IMAGE=$(zuul_image web)"
   echo "ZUUL_LAUNCHER_IMAGE=$(zuul_image launcher)"
@@ -202,7 +216,7 @@ from() { # from <checkout> <repository> [<path>...]
   printf '%s at %s%s' "$2" "$(git -C "$1" rev-parse HEAD)" "$([ "$dirty" -eq 0 ] || echo ", with uncommitted changes")"
 }
 printf 'Copies of %s and %s, for the Zuul test bed (ci/zuul/README.md)%s.\n' \
-  "$(from "$root" "kristofk/AIDepartment ci/zuul" ci/zuul deploy/zuul .bazelversion)" \
+  "$(from "$root" "kristofk/AIDepartment ci/zuul" ci/zuul deploy/zuul ci/shared-distdir.py ci/bazel-job.py ci/bazel-log-budget.json .bazelversion)" \
   "$(from "$config" kristofk/aid-zuul-config)" \
   "$([ "${TESTBED_LOOP:-}" = 1 ] && echo ", its two-agent loop's run")" | tee "$dest/TESTBED" > "$config_dest/TESTBED"
 echo "copied into $dest and $config_dest: $(cat "$dest/TESTBED")"

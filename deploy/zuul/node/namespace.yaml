@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zuul-nodes
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: budget
+  namespace: zuul-nodes
+spec:
+  hard:
+    pods: "3"
+    requests.cpu: 300m
+    limits.cpu: "6"
+    requests.memory: 384Mi
+    limits.memory: 6Gi
+    requests.ephemeral-storage: 18Gi
+    limits.ephemeral-storage: 18Gi
+    services: "0"
+    services.nodeports: "0"
+    services.loadbalancers: "0"
+    persistentvolumeclaims: "1"
+    requests.storage: 10Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pr
+  namespace: zuul-nodes
+automountServiceAccountToken: false
+
+---
+# Bound future containers too: an ephemeral-storage ResourceQuota alone permits
+# a pod which omits that resource. Existing workloads keep their explicit limits.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: scratch-defaults
+  namespace: zuul-nodes
+spec:
+  limits:
+    - type: Container
+      default:
+        ephemeral-storage: 128Mi
+      defaultRequest:
+        ephemeral-storage: 16Mi

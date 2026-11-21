@@ -1,0 +1,23 @@
+# Admin-provisioned read-only download cache, shared across trust levels. No action results.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: zuul-post-bazel-downloads
+spec:
+  capacity: {storage: 10Gi}
+  accessModes: [ReadOnlyMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef: {namespace: zuul-post, name: bazel-downloads}
+  hostPath: {path: /var/lib/zuul-downloads, type: Directory}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bazel-downloads
+spec:
+  accessModes: [ReadOnlyMany]
+  resources:
+    requests: {storage: 10Gi}
+  storageClassName: ""
+  volumeName: zuul-post-bazel-downloads

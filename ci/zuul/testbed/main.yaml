@@ -4,6 +4,8 @@
 # (untrusted, and tested speculatively).
 - tenant:
     name: aid
+    # All labels come from native providers; there is no Nodepool service (#1492).
+    use-nodepool: false
     # As ThunderBox's (#1637): an OIDC secret names zuul-web by its name on the services' network, not [web] root.
     allowed-oidc-issuers:
       - http://web:9000
@@ -21,6 +23,9 @@
                 - testbed/
         untrusted-projects:
           - @REPOSITORY@:
+              # Load only the scenario target branch; old probe branches may hold incompatible layouts.
+              # Pull requests targeting main still load their proposed configuration speculatively.
+              include-branches: [main]
               extra-config-paths:
                 - ci/zuul/zuul.d/
       opendev.org:

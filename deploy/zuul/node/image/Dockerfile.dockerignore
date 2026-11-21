@@ -1,0 +1,9 @@
+**
+!.bazelversion
+!ci/
+!ci/tools.pin
+!deploy/
+!deploy/zuul/
+!deploy/zuul/node/
+!deploy/zuul/node/image/
+!deploy/zuul/node/image/**

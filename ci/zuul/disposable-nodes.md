@@ -2,6 +2,8 @@
 
 Issue #1698 migrates reused check, gate-image and post SSH nodes to one fresh pod per job.
 The additive prerequisites (#1731/#1702) and trusted provider switch (cfg#30) are live.
+The identities below are the #1754 replacement, paired with aid-zuul-config#31; cfg#30
+reused the retired static names. Activation still requires the coordinated drain below.
 The launcher creates a new pod on demand for each job, waits for SSH readiness and deletes it after the job, including a failed, timed-out or aborted job.
 It waits for deletion before releasing the slot. No home directory, Bazel server or job process is reused. The
 Docker staging VM retains its existing reset before and after every job; its label stays `aid-staging-node`.
@@ -32,15 +34,28 @@ The launcher's ServiceAccount has pod get/list/watch/create/delete and get on `P
 three namespaces. It cannot read Secrets, modify policy/templates/RBAC or create namespaces. Its admin-installed
 NetworkPolicy permits the k3s API route, in addition to existing DNS/proxy/node routes. Jobs receive none of the
 launcher's token. Check's existing projected farm identity stays `zuul-nodes/pr`, and only reaches `dev`; gate/post
-retain their separate image-check accounts, BuildKit daemons and network policies. `check-external` remains blocked
+retain their separate image-check accounts, main/dev farm identities and network policies. `check-external` remains blocked
 by the trusted base guard. The launcher explicitly enables host-key checking when constructing each real Kubernetes provider label: upstream
 disables it for kubectl. The SSH nodescan must succeed and populate executor known_hosts before a job starts.
 
-Each provider has `resource-limits: {pods: 1}` and `reuse: false`. The namespace quota admits exactly that one pod
-and its requests/limits. Excess work waits in Zuul; no warm spare pod consumes the slot. Readiness checks the pod's
+The check provider has `resource-limits: {pods: 2}`; gate-image and post retain `resource-limits: {pods: 1}`.
+All use `reuse: false`. Each namespace quota admits that many pods and their summed requests/limits.
+Check shares its two slots with gate jobs that inherit the base nodeset. Excess work waits in Zuul; no warm spare pod consumes the slot. Readiness checks the pod's
 SSH probe. A launch retry adopts only a pod with the same Zuul identity. A failed or interrupted create is removable
 by its deterministic name, even if the API succeeded before ZooKeeper saved the response. Pod tags let the upstream
 leak collector remove abandoned allocations after a launcher outage. API failures are logged and retried. Even Zuul's delete timeout retains the allocation; only a confirmed API 404 releases its slot.
+
+A ResourceQuota admission rejection (`403 Forbidden`, `exceeded quota:`) leaves the create state at
+`START`: the launcher rechecks its configured N-slot limit before every attempt. Retained deleting
+allocations continue to count until a pod read confirms `404`. If the API still reports full quota
+because of an unmanaged pod or delayed quota reconciliation, admission retries at most once every
+five seconds, without consuming the launch timeout or failing the request. Restarting the launcher
+resumes this wait. RBAC, policy denials and other API errors still fail visibly; this does not change
+quotas or delete other occupants to make room.
+
+The proposed separate gate non-image pool, its capacity constraints and coordinated
+trusted-config rollout are in [gate-compute-design.md](gate-compute-design.md) (#1867).
+That design is not yet an activated provider.
 
 ## Provider migration prerequisite (#1754)
 
@@ -154,12 +169,14 @@ wrapper/cache setup and gate execution. With the pinned Zuul runtime installed:
 python deploy/zuul/server/launcher/test_bounded.py
 ```
 
-The required node-image `check` stage runs `image/test-download-cache.py` as UID 10001 with its
-installed pinned Bazel, before the image coordinator can push the node image. The probe verifies
-shared hits without HTTP, a successful same-hash/new-canonical-ID download and an unchanged read-only
-share. Its sources live under the declared node-image inputs, so changing the probe selects that image
-check. The voting Node policy suite checks this wiring and the fast cache-layout behavior; it requires
-no nested Bazel or outbound module downloads inside the farm's test action.
+The required OCI node-image runtime probe runs `image/test-download-cache.py` as UID 10001 with
+its checksum-pinned installed Bazel, before publication. The image carries the checkout-shaped fixture
+under `/opt/zuul-node-check`; it needs only loopback, using local stubs for unused toolchain modules
+and an empty file registry instead of external module metadata. arc-imagecheck keeps its closed egress policy.
+The probe verifies shared hits without HTTP, a successful same-hash/new-canonical-ID loopback download
+and an unchanged read-only share. `//build/images:download_cache_test` runs the same fixture with real
+Bazel and unusable outbound proxy settings on the farm. The Node policy suite covers the image wiring
+and the fast cache-layout behavior. Both gate and post checks still require actual image runtime proof.
 
 The Compose testbed runs the same lifecycle suite inside its pinned scheduler image before its ordinary scenarios.
 Those scenarios still substitute static Compose nodes; they do not claim to prove Kubernetes admission or actual

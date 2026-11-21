@@ -1,0 +1,9 @@
+# The system rc supplies connectivity; the checkout supplies the platform, CA and dev instance.
+# Scope the helper to the farm only. It reads no API credential or private signing key.
+common:remote --remote_executor=grpcs://frontend.build-farm.svc:8980
+common:remote --credential_helper=frontend.build-farm.svc=/usr/local/bin/zuul-farm-credential
+common:remote --remote_download_outputs=minimal
+common:remote --remote_local_fallback=false
+
+# Disposable nodes read shared hits through their private writable download cache.
+common --repository_cache=/home/zuul/.cache/bazel/repository-cache

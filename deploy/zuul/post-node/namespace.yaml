@@ -1,0 +1,53 @@
+# Zuul's post node (#1350, README.md): one pod for the jobs that publish from main, apart from the PR node's zuul-nodes.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zuul-post
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: budget
+  namespace: zuul-post
+spec:
+  hard:
+    pods: "1"
+    requests.cpu: 25m
+    limits.cpu: "3"
+    requests.memory: 128Mi
+    limits.memory: 6Gi
+    requests.ephemeral-storage: 16Gi
+    limits.ephemeral-storage: 16Gi
+    services: "0"
+    services.nodeports: "0"
+    services.loadbalancers: "0"
+    persistentvolumeclaims: "1"
+    requests.storage: 10Gi
+---
+# Its Kubernetes API token is the image check's (ci/image-run.mjs starts each image as a pod in ThunderBox's
+# image-check namespace, as the swift-image runners do): ThunderBox binds this account there, and nowhere else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: post
+  namespace: zuul-post
+automountServiceAccountToken: false
+
+---
+# Bound future containers too: an ephemeral-storage ResourceQuota alone permits
+# a pod which omits that resource. Existing workloads keep their explicit limits.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: scratch-defaults
+  namespace: zuul-post
+spec:
+  limits:
+    - type: Container
+      default:
+        ephemeral-storage: 128Mi
+      defaultRequest:
+        ephemeral-storage: 16Mi

@@ -1,0 +1,19 @@
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /home/zuul/.ssh/ssh_host_ed25519_key
+PidFile /home/zuul/.ssh/sshd.pid
+AuthorizedKeysFile /etc/node-ssh/authorized_keys
+# Kubernetes owns Secret mount directories. The key file is an admin-owned read-only mount.
+StrictModes no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+PermitRootLogin no
+UsePAM no
+AllowUsers zuul
+AllowTcpForwarding no
+X11Forwarding no
+PermitTunnel no
+Subsystem sftp internal-sftp
+# sshd uses only the first SetEnv directive. Keep every SSH job variable on this one line.
+SetEnv HTTPS_PROXY=http://172.31.250.2:3128 HTTP_PROXY=http://172.31.250.2:3128 https_proxy=http://172.31.250.2:3128 http_proxy=http://172.31.250.2:3128 NO_PROXY=localhost,127.0.0.1,.svc,.cluster.local no_proxy=localhost,127.0.0.1,.svc,.cluster.local PATH=/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

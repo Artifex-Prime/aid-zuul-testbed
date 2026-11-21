@@ -1,0 +1,28 @@
+# Admin-owned permissions; the launcher cannot change templates, identities or policy.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: launcher
+  namespace: zuul-post
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [podtemplates]
+    resourceNames: [job-node]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: launcher
+  namespace: zuul-post
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: launcher
+subjects:
+  - kind: ServiceAccount
+    name: launcher
+    namespace: zuul

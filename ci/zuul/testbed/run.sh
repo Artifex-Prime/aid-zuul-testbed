@@ -20,18 +20,13 @@ compose=(docker compose --project-directory "$here" -f "$here/compose.yaml" --en
 logs() {
   echo "== the services' logs"
   "${compose[@]}" logs --no-color --timestamps || true
-  # The end of each failed build's output (compose.yaml keeps the executor's build folders).
-  echo "== the failed builds' output"
-  # shellcheck disable=SC2016 # expanded in the executor's shell
-  "${compose[@]}" exec -T executor sh -c 'ls /var/lib/zuul/builds
-    for output in /var/lib/zuul/builds/*/work/logs/job-output.txt; do
-      grep -qE "FAILED|fatal:|failed=[1-9]|unreachable=[1-9]" "$output" || continue
-      echo "--- $output"; tail -n 60 "$output"
-    done' 2>&1 || true
+  # Early failures can precede job-output.txt or lack Ansible's usual failure markers.
+  echo "== retained builds: job output and Ansible process logs"
+  "${compose[@]}" exec -T executor sh -s < "$here/build-logs.sh" 2>&1 || true
 }
 finish() {
   local status=$?
-  [ "$status" -eq 0 ] || logs
+  [ "$status" -eq 0 ] || logs | tee "${TESTBED_DIAGNOSTICS:-$root/testbed-diagnostics.txt}" || true
   [ -z "${reports_pid:-}" ] || kill "$reports_pid" 2>/dev/null || true
   "${compose[@]}" down --volumes --timeout 10 > /dev/null 2>&1 || true
   sudo rm -rf "$work"
@@ -60,6 +55,9 @@ unpack() { # unpack <Secret> <key> <file>
     "$work/secrets.json" > "$3"
 }
 mkdir -p "$work/zookeeper-tls" "$work/client-tls" "$work/etc" "$work/ssh" "$work/logs"
+# The trusted post-run writes here from bubblewrap as a different user from the runner.
+# This disposable store is shared only by this run's builds.
+chmod 1777 "$work/logs"
 unpack zookeeper-tls keystore.pem "$work/zookeeper-tls/keystore.pem"
 unpack zookeeper-tls ca.crt "$work/zookeeper-tls/ca.crt"
 for key in tls.crt tls.key ca.crt; do unpack zuul-zookeeper-client "$key" "$work/client-tls/$key"; done
@@ -100,6 +98,10 @@ echo "== bounded Kubernetes lifecycle against the pinned Zuul runtime"
 docker run --rm --quiet --entrypoint python3 \
   --mount "type=bind,src=$root/deploy/zuul/server/launcher,dst=/bounded,readonly" \
   "$scheduler" /bounded/test_bounded.py
+echo "== observer App authentication against the pinned scheduler PyJWT runtime"
+docker run --rm --quiet --entrypoint python3 -e OBSERVER_RUNTIME_AUTH_TEST=1 \
+  --mount "type=bind,src=$root/deploy/zuul/observability,dst=/observer,readonly" \
+  "$scheduler" -B /observer/observer_test.py
 echo "== MQTT publish does not wait for AID or broker acknowledgment"
 docker run --rm --quiet -i --entrypoint python3 "$scheduler" - < "$here/check-mqtt.py"
 graphql=$(docker run --rm --quiet --entrypoint python3 "$scheduler" -c \
@@ -133,29 +135,37 @@ reports_pid=$!
 
 # A public test fixture, not a credential: mimic the raw token readable by the PR pod's job user.
 # The malicious-hook scenario proves check can read it while check-external executes none of its hooks.
-# On both nodes (compose.yaml), as a job may run on either.
-for node in node node-2; do
+# On every check/compute node (compose.yaml), as probes inspect all nodes.
+for node in node node-2 gate-compute gate-compute-2; do
   "${compose[@]}" exec -T --user root "$node" sh -c \
     'mkdir -p /var/run/farm; printf "testbed-farm-credential\n" > /var/run/farm/token; chmod 444 /var/run/farm/token'
 done
 TESTBED_NODE_ID=$("${compose[@]}" ps --quiet node)
 TESTBED_NODE_2_ID=$("${compose[@]}" ps --quiet node-2)
+TESTBED_COMPUTE_ID=$("${compose[@]}" ps --quiet gate-compute)
+TESTBED_COMPUTE_2_ID=$("${compose[@]}" ps --quiet gate-compute-2)
 TESTBED_EXECUTOR_ID=$("${compose[@]}" ps --quiet executor)
-export TESTBED_NODE_ID TESTBED_NODE_2_ID TESTBED_EXECUTOR_ID
+export TESTBED_NODE_ID TESTBED_NODE_2_ID TESTBED_COMPUTE_ID TESTBED_COMPUTE_2_ID TESTBED_EXECUTOR_ID
 
 echo "== scenario"
 secret_args=()
 [ "$secrets" != 1 ] || secret_args=(--secret "$(sed -n 's/^TESTBED_SECRET=//p' "$here/testbed.env")" \
   --project-key "$here/project-key.pem")
-# With TESTBED_LOOP_PULL, the two-agent loop's check alone, on that pull request (scenario.py, check 13).
+# With TESTBED_LOOP_PULL, the two-agent loop's check alone, on that pull request (scenario.py, check 14).
 loop=()
 if [ -n "${TESTBED_LOOP_PULL:-}" ]; then
   [[ "$TESTBED_LOOP_PULL" =~ ^[0-9]+$ ]] || { echo "TESTBED_LOOP_PULL '$TESTBED_LOOP_PULL' is not a pull request's number" >&2; exit 2; }
   loop=(--loop-pull "$TESTBED_LOOP_PULL")
 fi
+native=()
+if [ "${TESTBED_NATIVE_LAUNCHER:-false}" = true ]; then
+  native=(--native-launcher)
+fi
 python3 -I -B "$here/scenario.py" --zuul http://127.0.0.1:9000 --tenant aid --repository "$TESTBED_REPOSITORY" \
-  --config-repository "$config" --checkout "$root" "${secret_args[@]}" "${loop[@]}"
+  --config-repository "$config" --checkout "$root" "${secret_args[@]}" "${loop[@]}" "${native[@]}"
 
-if [ "${#loop[@]}" -eq 0 ] && grep -q 'connection "aid-events"' "$root/ci/zuul/testbed/zuul.conf"; then
+if [ "${#loop[@]}" -eq 0 ] && [ "${#native[@]}" -eq 0 ] && grep -qx 'TESTBED_REPORTS=1' "$here/testbed.env"; then
   python3 -I -B "$here/reports.py" "$work/reports.jsonl"
+else
+  echo "== MQTT lifecycle assertions skipped: focused run or copied pipelines have no aid-events reporter"
 fi

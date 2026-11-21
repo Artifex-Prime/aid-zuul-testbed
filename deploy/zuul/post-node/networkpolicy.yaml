@@ -1,0 +1,68 @@
+# Zuul post keeps its executor/launcher ingress and reaches DNS, proxy, farm frontend and scratch.
+# The farm token grants main only; the clean release stays local. ThunderBox grants API/pusher separately.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: post-node
+  namespace: zuul-post
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zuul-executor}
+      ports:
+        - {protocol: TCP, port: 2222}
+        - {protocol: TCP, port: 19885}
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zuul}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: launcher}
+      ports:
+        - {protocol: TCP, port: 2222}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 172.31.250.2/32}
+      ports:
+        - {protocol: TCP, port: 3128}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: build-farm}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: frontend}
+      ports:
+        - {protocol: TCP, port: 8980}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: arc-scratch}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: registry-scratch}
+      ports:
+        - {protocol: TCP, port: 5000}
+---
+# App publishing reads the existing release digest before deciding to build. The registry enforces read-only
+# storage; this grants no access to the authenticated writer (5001). Gate has no reason to read release tags.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: release-registry
+  namespace: zuul-post
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: zuul-post-node}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 172.31.250.1/32}
+      ports:
+        - {protocol: TCP, port: 5002}

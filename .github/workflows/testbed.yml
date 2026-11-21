@@ -37,6 +37,7 @@ jobs:
           path: .scratch-config
       - name: Scratch trusted playbooks under real Ansible and Zuul plugins
         run: |
+          cp .scratch-config/tests/publish-layout.yaml .scratch-config/zuul.d/publish.yaml
           python3 -m venv /tmp/scratch-tests
           /tmp/scratch-tests/bin/pip install -r .scratch-config/tests/requirements.txt
           /tmp/scratch-tests/bin/pip install --no-deps -r .scratch-config/tests/zuul-requirements.txt
@@ -50,7 +51,7 @@ jobs:
           yv=$(sed -n 's/^yq = "\(.*\)"$/\1/p' deploy/zuul/mise.toml)
           mise exec kustomize@$kv yq@$yv -- bash -euo pipefail -c '
             for part in gate-node post-node node gate-compute-node; do
-              kustomize build deploy/zuul/$part | yq -o=json -I=0 '''select(.kind == "PodTemplate")''' > /tmp/$part.template.json
+              kustomize build deploy/zuul/$part | yq -o=json -I=0 "select(.kind == \"PodTemplate\")" > /tmp/$part.template.json
             done
             node deploy/zuul/scratch-hooks.mjs /tmp/gate-node.template.json /tmp/post-node.template.json /tmp/node.template.json /tmp/gate-compute-node.template.json
           '
